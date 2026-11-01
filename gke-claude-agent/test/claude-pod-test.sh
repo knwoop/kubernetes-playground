@@ -8,7 +8,7 @@ mkdir "$TMP/bin"
 fail=0
 check() { if [[ "$2" == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: expected [$3] got [$2]"; fail=1; fi; }
 
-# Stub kubectl. STUB_STATE=present|absent, STUB_KUBECTL_FAIL=1, STUB_CLAUDE=<json file>.
+# Stub kubectl. STUB_CLAUDE_RC=<n> makes the claude exec exit n after printing. STUB_STATE=present|absent, STUB_KUBECTL_FAIL=1, STUB_CLAUDE=<json file>.
 cat > "$TMP/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 [[ -n "${STUB_KUBECTL_FAIL:-}" ]] && { echo 'Error from server (NotFound): pods "claude-0" not found' >&2; exit 1; }
@@ -17,6 +17,7 @@ for a in "$@"; do
 done
 printf '%s\0' "$@" > "$STUB_ARGS"
 cat "$STUB_CLAUDE"
+exit "${STUB_CLAUDE_RC:-0}"
 STUB
 chmod +x "$TMP/bin/kubectl"
 export PATH="$TMP/bin:$PATH" STUB_ARGS="$TMP/args"
@@ -58,5 +59,13 @@ export STUB_KUBECTL_FAIL=1
 err="$("$POD" a "x" 2>&1 >/dev/null)"; rc=$?
 check "kubectl failure exits non-zero" "$([[ $rc -ne 0 ]] && echo yes)" "yes"
 check "kubectl error is shown" "$([[ $err == *NotFound* ]] && echo yes)" "yes"
+unset STUB_KUBECTL_FAIL
+
+ok_json "$uuid_a"
+export STUB_CLAUDE_RC=1
+out="$("$POD" a "x" 2>"$TMP/err")"; rc=$?
+check "non-zero exec status with valid JSON exits non-zero" "$rc" "1"
+check "non-zero exec status prints no result on stdout" "$out" ""
+unset STUB_CLAUDE_RC
 
 exit $fail
