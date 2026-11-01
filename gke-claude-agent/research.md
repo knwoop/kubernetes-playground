@@ -1,288 +1,473 @@
-# GKE + per-person Claude Code Pods: research (2026-11-01)
+# Claude Code in a GKE Pod (claude -p via kubectl exec) research (2026-11-01)
 
-Purpose: feed the plan for a PoC in which the owner runs one Pod per person on GKE in a personal Google Cloud project. Each person logs in to the unmodified Claude Code with their own claude.ai subscription (`claude auth login`, run by that person in the Pod, credentials on a volume). A laptop script runs `claude -p` through `kubectl exec` with session carry-over. This review states facts and the open questions. It makes no recommendation.
+Purpose: collect facts for a PoC plan that runs Claude Code in a Pod on GKE and calls `claude -p` from a laptop via `kubectl exec`, to check that sessions carry over between calls.
 
-Done questions: Q1 prerequisites and cost. Q2 per-person login in a Pod. Q3 session flags, tool limits, deny rules. Q4 terms text. Q5 isolation between people.
+Scenario: one person with their own claude.ai subscription. A human runs `claude auth login` inside the Pod. The Pod is a non-root StatefulSet (replicas 1) in its own Namespace, with a ServiceAccount that has no GCP permissions. A PVC sits at CLAUDE_CONFIG_DIR, cwd is /workspace/repo, and managed-settings.json comes from a read-only ConfigMap (forceLoginMethod claudeai, forceLoginOrgUUID placeholder, deny rules on the credentials file). A NetworkPolicy is optional. The wrapper `claude-pod <key> "<prompt>"` derives a UUIDv5 from the key, uses `--session-id` when the session file is absent and `--resume` when present, with `--output-format json` and `--allowedTools` Read/Grep/Glob. Forbidden: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, reading `.credentials.json`, modifying the binary, automating login.
 
-Out of scope: Slack, a gateway, an operator-owned token or key, multi-region, production hardening. Constraint from the owner: all repo work lives in the single directory `gke-claude-agent/`.
+Done questions:
+1. Q1: install, non-root image, config/credential/transcript storage.
+2. Q2: CLI session semantics, JSON output, tool restriction, session file layout.
+3. Q3: managed settings and deny rules.
+4. Q4: GKE side (storage, security, network, registry, kubectl access).
+5. Q5: login flow, billing, terms, endpoints.
 
-Verification: the evidence author re-checked against the live source on 2026-11-01 only: Q1 enabled-services state; Q2 the "Login expired" and "another Claude Code process is refreshing it" entries; Q3 `--allowedTools` vs `--tools` wording and `--session-id` "must be a valid UUID"; Q4 Consumer Terms quotes and the legal-and-compliance quotes. Every other fact is sub-agent only and marked "unverified" where it decides a question.
+Out of scope: Slack, gateway, multi-user, API-key auth, automating login.
 
-- Issue: kubernetes-playground-mg1 / Commit: 6427a88 on kubernetes-playground-mg1-gke-claude-code-agent-plan
+- Issue: kubernetes-playground-mg1 (title: Spin up GKE for AI agent platform) / Commit: fec96d1 on branch kubernetes-playground-mg1-gke-claude-code-agent-plan
+
+Source key: docs = https://code.claude.com/docs/en/<page>. Docs fetched 2026-11-01; they mention Claude Code up to v2.1.302. "sub-agent" = not re-checked by a second fetch.
 
 ## Findings
 
 ```mermaid
 flowchart LR
-  A["Q1 project and GKE: API state, prices"] -->|"cluster hosts"| B["Pod: StatefulSet plus PVC"]
-  B -->|"kubectl exec -it, claude auth login"| C["Q2 login on the volume"]
-  C -->|"credentials found by claude -p"| D["Q3 sessions, tools, deny rules"]
-  D -->|"whose subscription runs where"| E["Q4 terms text"]
-  B -->|"one Pod per person"| F["Q5 isolation"]
-  E -.->|"hosting by the owner"| F
+  L["Laptop wrapper claude-pod"] -->|"kubectl exec claude -p"| K["kubectl exec"]
+  K -->|"pods/exec"| P["Pod / container (non-root)"]
+  P -->|"read/write config, credentials, transcripts"| V["PVC at CLAUDE_CONFIG_DIR"]
+  C["ConfigMap managed settings"] -->|"read-only mount /etc/claude-code"| P
+  P -->|"HTTPS API, OAuth, refresh"| A["Anthropic endpoints"]
+  R["Artifact Registry"] -->|"image pull"| G["GKE cluster"]
+  G -->|"schedules"| P
+  G -->|"PD CSI provisions"| V
 ```
 
-### Q1 Prerequisites and cost
+### Image and install
 
 ```mermaid
-flowchart LR
-  P["The project"] --> BL["Billing enabled: gcloud billing projects describe"]
-  P --> AR["artifactregistry API: gcloud services list"]
-  P --> CO["container API: gcloud container clusters list 403"]
-  P --> CE["compute API: gcloud compute networks list PERMISSION_DENIED"]
-  P --> SM["secretmanager API: not in services list"]
-  P --> OP["orgpolicy API: gcloud org-policies list failed"]
-  P --> OW["roles/owner: gcloud projects get-iam-policy"]
-  classDef on fill:#d8f0d8,stroke:#2a7
-  classDef off fill:#f6d8d8,stroke:#a33
-  classDef und fill:#eee,stroke:#888,stroke-dasharray: 4
-  class BL,AR,OW on
-  class CO,CE,SM off
-  class OP und
+flowchart TD
+  I["Install method"] --> N["native installer: curl claude.ai/install.sh"]
+  I --> M["npm -g @anthropic-ai/claude-code"]
+  I --> O["apt / dnf / apk repos"]
+  N --> H["per-user ~/.local/share/claude/versions/"]
+  M --> W["Node 22+ only to install"]
+  N --> U["auto-update on; DISABLE_AUTOUPDATER=1 stops"]
+  H --> B["running session reads binary from disk; unreadable -> Bus error"]
+  I --> X["x64 or ARM64; glibc and musl builds"]
 ```
 
-Legend: green enabled or present, red not enabled, grey undetermined. Tooling and docs facts that the diagram cannot carry:
-
-| fact | source | → Q1 |
+| Attribute | Fact | Source |
 |---|---|---|
-| No GKE clusters and no VPC networks could be listed (APIs disabled); whether `default` network exists: undetermined | same commands as above | Q1 |
-| Org policy constraints unreadable; `constraints/compute.vmExternalIpAccess` Deny All makes public Autopilot creation fail | autopilot-cluster docs page (creating-an-autopilot-cluster) | Q1 |
-| Minimum role: Kubernetes Engine Cluster Admin (Autopilot and zonal pages); node SA needs `roles/container.defaultNodeServiceAccount` | creating-an-autopilot-cluster, creating-a-zonal-cluster | Q1 |
-| Whether Compute Engine API must be enabled separately for cluster creation: not stated in pages fetched | docs fetched | Q1 |
-| "New Autopilot clusters are regional clusters that have a publicly accessible IP address." | concepts/autopilot-overview | Q1 |
-| Default StorageClass is balanced PD (ext4); `standard-rwo` binds at first consumer; PD is zonal (`topology.gke.io/zone`); RWO by default | concepts/persistent-volumes | Q1 |
-| Autopilot bills Pod resource requests per second; Running Pods and Pods in CrashLoopBackOff are billed; unscheduled or terminated are not; Autopilot may raise requests to minimums | cloud.google.com/kubernetes-engine/pricing | Q1 |
-| No automatic idle scale-down of a StatefulSet Pod described; "Scale to zero using KEDA" appears in docs nav | autopilot-overview nav | Q1 |
-| Numeric Autopilot minimums not read: whether 0.5 vCPU / 1 GiB / 2 GiB is accepted as-is is undetermined | concepts/autopilot-resource-requests | Q1 |
-| Laptop: `kubectl` and `gke-gcloud-auth-plugin` not installed; `gcloud` 566.0.0 and `docker` installed (Homebrew); install steps `gcloud components install ...`, not run; whether it works with the Homebrew gcloud: undetermined | `command -v`, `gcloud --version`; how-to/cluster-access-for-kubectl | Q1 |
-| Push needs `roles/artifactregistry.writer`; an asia-northeast1 Docker repository already exists (`cloud-run-source-deploy`, 0 MB) | artifact-registry pushing-and-pulling; `gcloud artifacts repositories list` | Q1 |
+| Installer args | `-s stable` or a version number | docs/setup (sub-agent) → Q1 |
+| npm | "The installed `claude` binary does not itself invoke Node."; do not use sudo npm | docs/setup (sub-agent) → Q1 |
+| apt/dnf/apk | repos at downloads.claude.ai; no auto-update | docs/setup (sub-agent) → Q1 |
+| Requirements | Ubuntu 20.04+, Debian 10+, Alpine 3.19+; 4 GB+ RAM; Alpine needs libgcc, libstdc++, ripgrep, `USE_BUILTIN_RIPGREP=0`; no-AVX CPUs give "Illegal instruction" | docs/setup, docs/troubleshoot-install (sub-agent) → Q1 |
+| Official non-root Dockerfile | `USER node`, npm install of pinned version, `mkdir -p /workspace /home/node/.claude && chown -R node:node` | https://raw.githubusercontent.com/anthropics/claude-code/main/.devcontainer/Dockerfile (sub-agent) → Q1 |
+| Updates | `DISABLE_UPDATES=1` blocks all; docs/devcontainer: pin via npm version and set `DISABLE_AUTOUPDATER`; native installer deletes old versions itself | docs/setup, docs/env-vars, docs/devcontainer (sub-agent) → Q1 |
+| Root | `--dangerously-skip-permissions` rejected as root | docs/devcontainer (sub-agent) → Q1 |
+| Traffic switch | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` disables auto-updates, telemetry, error reporting, /feedback, feature-flag fetching | docs/env-vars (sub-agent) → Q3 |
+
+### Sessions and CLI
+
+```mermaid
+flowchart TD
+  S["claude -p"] --> J["--output-format json: result, session_id, metadata"]
+  S --> T["transcript: config/projects/PROJECT/ID.jsonl"]
+  T --> D["PROJECT = cwd, non-alphanumerics -> '-' (/workspace/repo -> -workspace-repo)"]
+  S --> SI["--session-id: must be a valid UUID"]
+  S --> RS["--resume: id / name / path; searches project, worktrees, then other projects"]
+  S --> NP["--no-session-persistence: not resumable"]
+  T --> RT["deleted after cleanupPeriodDays (default 30)"]
+```
+
+| Attribute | Fact | Source |
+|---|---|---|
+| Existing id with `--session-id` | Not in docs. Issue #86761 (open, v2.1.232): `Session ID <uuid> is already in use`, guard described by issue author as "a plain 'does <uuid>.jsonl already exist' test". Issue #87399 (closed): "in use" with no .jsonl, jobs registry (Windows, background) | github.com/anthropics/claude-code/issues/86761, /87399 (sub-agent) → Q2 |
+| Missing id on resume | `No conversation found with session ID: <id>`; exit code not documented; hand-copied duplicate in a second project gives not-found | docs/cli-reference, docs/sessions, docs/headless (sub-agent) → Q2 |
+| Resume cwd | Issue #5768 (open, v1.0.80): resume worked only from the starting directory; docs state global lookup (v2.1.223+) | github.com/anthropics/claude-code/issues/5768 (sub-agent) → Q2 |
+| Same id on resume | `--fork-session` creates a new id; equality of session_id after plain resume is inferred, not shown in docs | docs/cli-reference (sub-agent) → Q2 |
+| Concurrency | Resuming the same session twice without forking interleaves into one transcript; issue #75761 (closed): two live processes append to one jsonl; no issue found on concurrent `claude -p --resume` | docs/sessions; issue #75761 (sub-agent) → Q2 |
+| Not restored on resume | `--mcp-config`, `--settings`, `--plugin-dir`, `--add-dir`, `--fallback-model`; permission mode is what a new `-p` run would start with | docs/sessions (sub-agent) → Q2 |
+| JSON shape | No literal example in docs; SDK `SDKResultMessage` has `type, subtype, session_id, is_error, num_turns, result, total_cost_usd, usage, permission_denials, ...`; error subtypes carry `errors[]` and no `result`; equivalence to CLI JSON not stated | docs/headless; docs/agent-sdk/typescript (sub-agent) → Q2 |
+| Exit codes | 0 success, non-zero failure; in-run failures (e.g. missing auth) printed as result on stdout; SIGTERM 143; per-failure codes not documented | docs/headless (sub-agent) → Q2 |
+| Empty output | Issue #98610 (open): `claude -p --resume` printed empty stdout with exit 0 on a refusal-fallback turn | github.com/anthropics/claude-code/issues/98610 (sub-agent) → Q2 |
+| Hidden from picker | `-p` sessions are hidden from the picker and `--continue`; `--resume <id>` finds them; `-p --continue` includes them | docs/sessions, docs/cli-reference (sub-agent) → Q1 |
+| Project dir name | `CLAUDE_CODE_PROJECT_DIR_NAME` (v2.1.234+) fixes the name; ignored unless CLAUDE_CONFIG_DIR set; 1-64 letters/digits/hyphens/underscores; names over 200 chars truncated plus hash | docs/sessions, docs/claude-directory (sub-agent) → Q1 |
+| Retention | `cleanupPeriodDays` default 30, min 1, 0 is a validation error; mtime-vs-creation basis not stated | docs/claude-directory (sub-agent) → Q1 |
+
+### Managed settings and deny
+
+```mermaid
+flowchart TD
+  F["/etc/claude-code/managed-settings.json + managed-settings.d/*.json"] --> M["merge: lists (permissions.deny) combine; single values later wins"]
+  M --> Pr["rank above CLI flags, project, user settings"]
+  F --> Bad["present but not a JSON object -> refuses to start"]
+  M --> Dn["permissions.deny Read rule"]
+  Dn --> E1["built-in file tools and recognized Bash commands (cat, head, tail, sed, tee), redirection targets"]
+  Dn --> E2["not: commands that read without naming the file; arbitrary subprocesses"]
+  E2 --> SB["OS-level: sandbox (Bash and children, not Read/Grep/Glob)"]
+```
+
+| Attribute | Fact | Source |
+|---|---|---|
+| Precedence | "Nothing in your own settings files or `--settings` overrides a managed key"; `forceLogin*` and `permissions.deny` not among lower-scope exceptions | docs/settings (sub-agent) → Q3 |
+| Multiple managed sources | `managedSourcesBehavior` default "first-wins"; remote fetched only for direct Anthropic API auth with an eligible credential | docs/managed-settings (sub-agent) → Q3 |
+| Symlinks, reload | Symlinks accepted; files watched and reloaded. Docs do not say if Claude Code writes the managed file; no mention of read-only mounts or ConfigMap subPath | docs/managed-settings, docs/settings (sub-agent) → Q3 |
+| Path syntax | `//path` absolute, `~/path` home, `/path` relative to settings source, `path`/`./path` relative to cwd; no managed-settings row for `/path`; env vars in rule paths: not documented | docs/permissions (sub-agent) → Q3 |
+| Grep/Glob | Read rules apply "best-effort" to Grep and Glob; deny matches requested path or symlink target; Read deny also blocks Edit/Write | docs/permissions (sub-agent) → Q3 |
+| `-p` | No statement that deny is skipped or confirmed in `-p`; `-p` counts as trusted | docs/settings, docs/permissions (sub-agent) → Q3 |
+| Other keys | `allowManagedPermissionRulesOnly` (also ignores `--allowedTools`), `permissions.disableBypassPermissionsMode`, `permissions.disableAutoMode`, `permissions.blockReadsOutsideWorkingDirectories`, managed `env`, `apiKeyHelper`, `cleanupPeriodDays` | docs/settings-reference (sub-agent) → Q3 |
+| Tool flags | `--allowedTools`: "Tools that execute without prompting for permission ... To restrict which tools are available, use `--tools` instead." `--tools` "doesn't affect MCP tools". Bare name in `--disallowedTools` removes the tool; `Bash(rm *)` only denies matching calls | docs/cli-reference (verified by second fetch for first two) → Q2 |
+| Auto-approved reads | Read/Grep/Glob need no approval in working directory and added dirs; Glob and Grep absent by default on macOS/Linux/WSL; naming either in `--tools` or `--allowedTools` restores both | docs/permissions, docs/tools-reference (sub-agent) → Q2 |
+| Modes | `-p` with no mode starts in Manual mode from v2.1.302; `dontAsk` auto-denies prompts | docs/headless, docs/permission-modes (sub-agent) → Q2 |
+| Without `--bare` | `-p` runs project hooks and connects `.mcp.json` servers even in an untrusted folder | docs/headless (sub-agent) → Q2 |
+
+### GKE storage, security, network
+
+```mermaid
+flowchart TD
+  ST["PD CSI: standard-rwo (balanced), WaitForFirstConsumer"] --> RWO["RWO only, zonal disk tied to one zone"]
+  SS["StatefulSet"] --> RT["delete / scale down keeps PVC (Retain, stable v1.32)"]
+  FS["fsGroup"] --> CH["recursive chown at mount; fsGroupChangePolicy"]
+  AP["Autopilot"] --> SEC["RuntimeDefault seccomp, drops CAP_NET_RAW"]
+  AP --> DP["Dataplane V2: NetworkPolicy always on"]
+  DP --> FQ["FQDNNetworkPolicy v1alpha1"]
+  WI["Workload Identity (always on in Autopilot)"] --> MD["Compute metadata server unreachable from Pods"]
+```
+
+| Attribute | Fact | Source |
+|---|---|---|
+| Storage classes | Default balanced PD ext4; `standard-rwo`, `premium-rwo`; Autopilot default `standard-rwo`; `reclaimPolicy: Delete` described as default policy, standard-rwo's own value not stated | https://docs.cloud.google.com/kubernetes-engine/docs/concepts/persistent-volumes (sub-agent) → Q4 |
+| fsGroup | No effect on configMap/secret/emptyDir; large PVs can make mounts fail; PD driver VOLUME_MOUNT_GROUP support not determined; unset runAsGroup means primary GID 0 | https://kubernetes.io/docs/tasks/configure-pod-container/security-context/ (sub-agent) → Q4 |
+| Autopilot requests | Min 50m CPU / 52 MiB (bursting) or 250m / 512 MiB; max 30 vCPU / 110 GiB; ephemeral 10 MiB-10 GiB; CPU:memory 1:1 to 1:6.5 | https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests (sub-agent) → Q4 |
+| Restricted PSS | runAsNonRoot true, runAsUser not 0, allowPrivilegeEscalation false, drop ALL, seccompProfile RuntimeDefault/Localhost; allowPrivilegeEscalation defaults true if unset | https://kubernetes.io/docs/concepts/security/pod-security-standards/ (sub-agent) → Q4 |
+| NetworkPolicy | Dataplane V2 default on Autopilot; Calico only in Standard; by default all Pods communicate freely; standard policy is IP/CIDR based | https://docs.cloud.google.com/kubernetes-engine/docs/how-to/network-policy; https://kubernetes.io/docs/concepts/services-networking/network-policies/ (sub-agent) → Q4 |
+| DPv2 + WI egress | Allow `169.254.169.254/32` ports 80, 8080; DNS must be allowed for workloads and `node-local-dns`; no exact default-deny-egress-plus-DNS manifest found | network-policy page; .../how-to/nodelocal-dns-cache (sub-agent) → Q4 |
+| FQDN policy | `networking.gke.io/v1alpha1`; requires DPv2, kube-dns or Cloud DNS, gcloud 462.0.0+; max 50 resolved IPs per policy, 100 IPs per hostname quota; on Autopilot enabled only by updating an existing cluster | https://docs.cloud.google.com/kubernetes-engine/docs/how-to/fqdn-network-policies (sub-agent) → Q4 |
+| Pod identity | Without Workload Identity, Pods inherit the node service account; Pods without a KSA use namespace `default` KSA; `automountServiceAccountToken: false` stops only the Kubernetes API token | https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity; https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/ (sub-agent) → Q4 |
+| Registry | Push path `LOCATION-docker.pkg.dev/PROJECT/REPO/IMAGE:TAG`; GKE pulls with Compute Engine default SA, `roles/artifactregistry.reader` if Editor grant disabled | https://docs.cloud.google.com/artifact-registry/docs/docker/authentication; .../integrate-gke (sub-agent) → Q4 |
+| Architecture | GKE schedules to x86 by default; Arm nodes tainted `kubernetes.io/arch=arm64:NoSchedule`; multi-arch images run on either | https://docs.cloud.google.com/kubernetes-engine/docs/how-to/prepare-arm-workloads-for-deployment (sub-agent) → Q4 |
+| kubectl access | `gke-gcloud-auth-plugin`, then `get-credentials`; exec needs `pods/exec` subresource, verb `create` | https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl (sub-agent) → Q4 |
+| This machine | No kubectl, no kube config; gcloud and docker present; cluster type, node arch, storage classes, enforcement not checked | local check 2026-11-01 → Q4 |
+
+### Login, billing, terms
+
+```mermaid
+flowchart TD
+  LG["claude auth login (in Pod)"] --> URL["prints URL; open on laptop browser"]
+  URL --> CD["browser shows code"]
+  CD --> PS["paste at 'Paste code here' (stdin)"]
+  PS --> CR["credentials in CONFIG_DIR/.credentials.json (0600, plaintext)"]
+  CR --> RF["auto refresh; rejected refresh -> cleared, 'Login expired'"]
+  RF --> PE["in -p: 'OAuth session expired and could not be refreshed'"]
+  EN["ANTHROPIC_API_KEY etc. present"] -->|"outrank /login credential"| CR
+```
+
+| Attribute | Fact | Source |
+|---|---|---|
+| Login options | `--email`, `--sso`, `--console` (API billing); `claude auth status` exits 0/1, JSON; `configDirectory` field v2.1.268+; no `--claudeai` flag, `claudeai` only as `forceLoginMethod` value | docs/cli-reference (sub-agent) → Q5 |
+| Refresh | Parallel sessions on one machine share a lock; `/login` unavailable in `-p`; warning 3 days before expiry; TTLs not stated | docs/errors, docs/troubleshoot-install, docs/authentication, docs/headless (sub-agent) → Q5 |
+| Precedence | Cloud-provider vars, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` ("In non-interactive mode (`-p`), the key is always used when present"), `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN`, Anthropic profile all rank above the `/login` credential | docs/authentication (sub-agent) → Q5 |
+| Console login | `claude auth login --console` stores a profile in `~/.config/anthropic`, outside CLAUDE_CONFIG_DIR | docs/authentication (sub-agent) → Q1 |
+| Billing | "when you're signed in with your Claude plan, the Claude Agent SDK and `claude -p` still draw from your subscription limits." (Oct 7, 2026 update); June 15, 2026: changes paused | https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan (verified by second fetch) → Q5 |
+| Limits | Advertised limits "assume ordinary, individual usage"; Claude Code and chat share limits | docs/legal-and-compliance; https://support.claude.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan (sub-agent) → Q5 |
+| forceLoginOrgUUID | Only managed source enforces; mismatch -> exit at startup; empty array or wrong type -> cannot start or log in; named for Terminal, VS Code, Agent SDK logins; `claude auth login` not named; placeholder handling undocumented | docs/settings-reference, docs/authentication (sub-agent) → Q3, Q5 |
+| Blocked at startup | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper` blocked when forceLogin* set; issue #56935 (closed, not planned, v2.1.129): `setup-token` tokens fail under forceLoginOrgUUID | docs/authentication; github.com/anthropics/claude-code/issues/56935 (sub-agent) → Q3, Q5 |
 
 ## Flow
 
-Sequence 1: first login (Q2). The TTY need of `claude auth login` is not documented (→ Q2).
+(a) Human login in the Pod.
 
 ```mermaid
 sequenceDiagram
-  participant L as Person laptop
-  participant P as Pod
-  participant V as Volume
-  participant B as Browser
-  L->>P: kubectl exec -it POD -- claude auth login (gh #81545 reports this as the working manual path)
-  P-->>L: prints login URL (DOC-TS: copy the URL it prints)
-  L->>B: open URL, sign in (DOC-TS)
-  B-->>L: shows a code instead of redirecting to localhost (DOC-TS)
-  L->>P: paste code at Paste code here prompt (DOC-AUTH)
-  P->>V: writes CLAUDE_CONFIG_DIR/.credentials.json, mode 0600 (DOC-AUTH)
-  P-->>L: Login successful (DOC-AUTH)
+  participant H as Human (laptop)
+  participant X as kubectl exec -it
+  participant C as claude in Pod
+  participant B as Browser (laptop)
+  participant A as claude.ai / platform.claude.com
+  H->>X: open shell in Pod (inferred)
+  X->>C: claude auth login
+  C-->>H: prints URL (docs/troubleshoot-install)
+  H->>B: open URL, sign in
+  B->>A: authenticate
+  A-->>B: shows code instead of redirect to localhost (docs/troubleshoot-install)
+  H->>C: paste code at "Paste code here" (docs/authentication)
+  C->>A: token exchange (platform.claude.com, docs/network-config)
+  C->>C: write .credentials.json 0600 in CLAUDE_CONFIG_DIR (docs/authentication)
+  C-->>H: Login successful
+  Note over C: managed forceLoginMethod/forceLoginOrgUUID check at login: whether claude auth login is covered is undocumented
 ```
 
-Sequence 2: wrapper run (Q3). The behavior of `--session-id` for an existing ID is not documented (→ Q3).
+(b) First and second `claude-pod a ...` call.
 
 ```mermaid
 sequenceDiagram
-  participant S as Laptop script
-  participant P as Pod
-  participant T as Transcript file
-  S->>P: kubectl exec -- check session file (script logic, PoC)
-  alt no session file
-    S->>P: claude -p --session-id UUID --output-format json (cli-reference)
-  else session file exists
-    S->>P: claude -p --resume ID --output-format json (headless: Continue conversations)
-  end
-  P->>T: projects/PROJECT/ID.jsonl under CLAUDE_CONFIG_DIR (sessions docs)
-  P-->>S: JSON with result and session_id, exit 0 or non-zero (headless)
+  participant W as claude-pod wrapper
+  participant K as kubectl exec
+  participant C as claude -p
+  participant F as projects/-workspace-repo/ID.jsonl
+  W->>W: ID = UUIDv5(key a) (scenario)
+  W->>K: test -f ID.jsonl (inferred)
+  K->>F: absent
+  W->>K: claude -p --session-id ID --output-format json --allowedTools ...
+  K->>C: run
+  C->>F: create transcript (docs/sessions)
+  C-->>W: JSON with session_id, result (docs/headless)
+  Note over W,C: second call
+  W->>K: test -f ID.jsonl (inferred)
+  K->>F: present
+  W->>K: claude -p --resume ID --output-format json ...
+  C->>F: append to same transcript (docs/sessions)
+  C-->>W: JSON, same session_id on plain resume is inferred and not documented
+  Note over C,F: --session-id on existing id: undocumented, issue #86761 reports an error
 ```
 
-Sequence 3: refresh, expiry, overlapping runs (Q2). Refresh-token rotation is stated by issue authors, not by an Anthropic page (unverified).
+(c) Read of the credentials path vs a Bash read.
 
 ```mermaid
 sequenceDiagram
-  participant A as Run A claude -p
-  participant B as Run B claude -p
-  participant F as Credential file and lock
-  A->>F: access token expired, take refresh lock (DOC-ERR, gh #95822)
-  B->>F: also needs refresh, lock held
-  B-->>B: Failed to refresh OAuth token: another process is refreshing it, code server_error (DOC-ERR)
-  A->>F: writes rotated token, or exits before saving (gh #102265 unverified)
-  B->>F: retry uses renewed login (DOC-ERR)
-  F-->>A: refresh token rejected: credentials cleared, Failed to authenticate OAuth session expired (DOC-ERR)
+  participant M as Model
+  participant CC as Claude Code permission layer
+  participant FS as .credentials.json
+  M->>CC: Read(.credentials.json)
+  CC->>CC: managed permissions.deny Read rule matches (docs/permissions)
+  CC-->>M: denied (text the model receives: not documented)
+  M->>CC: Bash cat .credentials.json
+  CC->>CC: deny covers recognized commands cat/head/tail/sed/tee (docs/permissions)
+  CC-->>M: denied
+  M->>CC: Bash grep -r pattern . from the directory holding the file
+  CC->>FS: not named in the command, deny does not apply (docs/permissions, verified)
+  FS-->>M: contents (grep is in the auto-approved read-only Bash set, docs/permissions)
+  Note over CC: deny inside -p: no statement either way (undocumented)
 ```
-
-## Observed data
-
-| metric | value | query/source | environment | date |
-|---|---|---|---|---|
-| Billing | enabled | `gcloud billing projects describe` | the project | 2026-11-01 |
-| Enabled services | 26, incl. artifactregistry, run, aiplatform; not container, compute, secretmanager, orgpolicy | `gcloud services list --enabled` | the project | 2026-11-01 |
-| Account role | `roles/owner` (direct grant only) | `gcloud projects get-iam-policy` | the project | 2026-11-01 |
-| Claude Code CLI | 2.1.316 | `claude --version` | laptop | 2026-11-01 |
-| Cluster fee | $0.10 per cluster-hour | pricing page; Billing Catalog SKUs (unverified) | asia-northeast1 | 2026-11-01 |
-| Free tier | $74.40 per billing account per month, zonal and Autopilot only | pricing page "Free tier" | all | 2026-11-01 |
-| Autopilot vCPU | $0.0571 per vCPU-hour | SKU 36BE-CA63-EC2D (unverified) | asia-northeast1 | 2026-10-31 SKU time |
-| Autopilot memory | $0.0063215 per GiB-hour | SKU 1598-3115-2C68 (unverified) | asia-northeast1 | same |
-| Autopilot ephemeral | $0.0000704 per GiB-hour (SSD variant $0.0001784, which one applies undetermined) | SKU 6CCC-22BA-A597, DB72-B975-7556 (unverified) | asia-northeast1 | same |
-| PD balanced / standard | $0.13 / $0.052 per GiB-month | Billing Catalog Compute SKU (unverified) | asia-northeast1 | same |
-| Artifact Registry storage | first 0.5 GiB free, then $0.10 per GiB-month | Billing Catalog (unverified) | global | same |
-| Pod arithmetic, 0.5 vCPU, 1 GiB, 2 GiB ephemeral, 1 GiB PD, 730 h | vCPU 20.84 + memory 4.61 + ephemeral 0.10 + PD 0.13 = 25.69 USD per month (SSD ephemeral: 25.85) | arithmetic on rows above | Autopilot | 2026-11-01 |
-| Cluster fee per month | 0.10 x 730 = 73.00; free-tier credit -74.40 exceeds it | arithmetic | one Autopilot or zonal cluster | 2026-11-01 |
-| Not included | egress, Logging and Monitoring ingestion, request rounding, discounts | evidence | - | - |
-| Quotas (asia-northeast1) | CPUs 3000, in-use external IPv4 2300, PD standard 204800 GB, PD SSD 81920 GB; all-region CPUs 12000 | `gcloud beta quotas info list --service=compute.googleapis.com` | the project | 2026-11-01 |
-| Which quota balanced PD counts against | not stated | compute/resource-usage passage read | - | - |
 
 ## External specs
 
-Quotes are from the evidence.
+Verbatim from the evidence:
 
-| topic (→ Q4) | original | URL |
+> "They don't apply to a command that reads files without naming them, such as `grep -r pattern .` run from the directory that holds the file, or to arbitrary subprocesses ... For OS-level enforcement ... enable the sandbox." (docs/permissions, "What Read and Edit rules cover")
+
+> "The set includes ls, cat, echo, pwd, head, tail, grep, find, wc, which, diff, stat, du, cd, and read-only forms of git. The set is not configurable" (docs/permissions, "Read-only commands")
+
+> "Tools that execute without prompting for permission, apart from reads from network paths. ... To restrict which tools are available, use `--tools` instead." (docs/cli-reference, `--allowedTools`)
+
+> "when you're signed in with your Claude plan, the Claude Agent SDK and `claude -p` still draw from your subscription limits." (https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+
+> "OAuth authentication is intended exclusively for purchasers of Claude Free, Pro, Max, Ultra, Team, and Enterprise subscription plans and is designed to support ordinary use of Claude Code and other native Anthropic applications." (docs/legal-and-compliance)
+
+| Limit | Value | Source |
 |---|---|---|
-| Collect or store credentials | "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." | code.claude.com/docs/en/legal-and-compliance |
-| End-user carve-out | "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code as described under Can customers offer Claude Code in their products? above." | same |
-| Hosting condition | "preinstalling or running Claude Code in your products or services (e.g. in hosted sandboxes or other agent infrastructure) requires agreeing to our Commercial Terms of Service and complying with the conditions below" | same |
-| Conditions | "The Claude Code binary must not be modified." / "Customers may not pay for, resell, or intermediate Claude usage on their end users' behalf. Each end user must authenticate with their own ... Claude subscription plan credentials" | same |
-| No sharing | "You may not share your Account login information, Anthropic API key, or Account credentials with anyone else. You also may not make your Account available to anyone else." | anthropic.com/legal/consumer-terms, section 2 |
-| Automation | "Except when you are accessing our Services via an Anthropic API Key or where we otherwise explicitly permit it, to access the Services through automated or non-human means, whether through a bot, script, or otherwise." | consumer-terms, section 3 |
-| Usage limits | "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK." | legal-and-compliance, Acceptable use |
-| Routing | "Resell, proxy, or otherwise provide access to Claude through unauthorized means, including services that route requests through consumer subscriptions" | anthropic.com/legal/aup |
-
-Versions: Consumer Terms effective Oct 8, 2025. Commercial Terms effective Jun 17, 2025. Usage Policy page shows effective Nov 12, 2026 (later than the fetch date; earlier versions not compared). Legal-and-compliance page shows no date.
-
-Limits and quotas:
-
-| item | value | source |
-|---|---|---|
-| Pro and Max | five-hour session limit and weekly limit, shared across Claude and Claude Code | support.claude.com article 11145838 |
-| Ultra | weekly limit; verified Ultra has no five-hour limit | same |
-| Team and Enterprise | Claude Code included with every Team seat; usage-based Enterprise has no per-seat limit | support.claude.com article 11845131 |
-| FQDNNetworkPolicy | max 50 resolved IPs; Dataplane V2 required; kube-dns or Cloud DNS | how-to/fqdn-network-policies |
-| Namespaces per cluster | 10,000 theoretical | best-practices/enterprise-multitenancy |
-| `--pod-running-timeout` | default 1m0s, covers waiting for a Pod only | kubectl_exec reference |
-| Transcript retention | `cleanupPeriodDays` default 30, minimum 1 | claude-directory |
+| FQDN policy, resolved IPs per policy | 50 | .../how-to/fqdn-network-policies |
+| FQDN policy, IPs per hostname quota | 100 | same |
+| Autopilot CPU min / max | 50m (bursting) or 250m / 30 vCPU | .../concepts/autopilot-resource-requests |
+| Autopilot memory min / max | 52 MiB (bursting) or 512 MiB / 110 GiB | same |
+| Autopilot ephemeral storage | 10 MiB - 10 GiB | same |
+| Autopilot CPU:memory ratio | 1:1 to 1:6.5 | same |
+| Claude Code host memory | 4 GB+ | docs/setup |
 
 ## Conventions
 
-None found. The repo has no code conventions; the only code is the PoC files under `gke-claude-agent/poc/`, written in this session.
+none found
 
 ## Constraints
 
 ```mermaid
-flowchart LR
-  C1["container API not enabled, gcloud container clusters list 403"] -->|"blocks"| X1["any cluster creation until enabled"]
-  C2["compute API not enabled, gcloud compute networks list"] -->|"leaves undetermined"| X2["network and quota reads via compute"]
-  C3["claude auth login has no print-url or code flag, local --help, gh #81545"] -->|"leaves undetermined"| X3["non-interactive login"]
-  C4["no docs statement on TTY need of auth login, DOC-AUTH DOC-TS"] -->|"leaves undetermined"| X4["kubectl exec with or without -t"]
-  C5["no docs statement on overlapping -p runs, DOC-HL DOC-AUTH DOC-TS"] -->|"leaves undetermined"| X5["parallel runs per person"]
-  C6["--session-id on existing ID undocumented, cli-reference sessions"] -->|"leaves undetermined"| X6["re-run with same ID"]
-  C7["terms define neither platform nor hosts nor end user, legal-and-compliance"] -->|"leaves undetermined"| X7["status of an owner-run Pod"]
-  C8["Claude Code not named in Consumer or Commercial Terms, raw-text search"] -->|"leaves undetermined"| X8["terms text for -p use"]
+flowchart TD
+  K1["Forbidden env: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN"] --> D1["outrank /login credential; in -p the key is always used when present"]
+  K1 --> D2["blocked at startup when forceLogin* is set"]
+  K2["Managed file present but not a JSON object"] --> D3["Claude Code refuses to start"]
+  K3["Read deny names a path"] --> D4["covers file tools, recognized Bash commands, redirection"]
+  K3 --> D5["does not cover grep -r from the directory, or subprocesses"]
+  K4["forceLoginOrgUUID empty array or wrong type"] --> D6["cannot start or log in"]
+  K5["No kubectl on this machine"] --> D7["cluster type, arch, storage classes, policy enforcement unchecked"]
+  K6["Pod omits Restricted-level fields (runAsNonRoot, seccomp, drop ALL)"] --> D8["Autopilot reject-or-mutate behavior not determined; PSS Restricted prohibits the omission"]
 ```
 
 ## Questions for the plan
 
 ```mermaid
 flowchart LR
-  A["Cluster mode"] -->|"answer changes"| B["Pod and volume shape"]
-  C["Login method"] -->|"answer changes"| D["Overlap and idle login handling"]
-  B -->|"answer changes"| E["Unit of isolation"]
-  E -->|"answer changes"| F["Egress limits"]
-  G["Tool restriction"] -->|"answer changes"| D
-  H["Terms question"] -->|"answer changes"| C
-  H -->|"answer changes"| E
+  P1["P1 tool restriction"] --- P2["P2 credentials protection"]
+  P2 --- P7["P7 storage / ownership"]
+  P2 --- P5["P5 org UUID"]
+  P3["P3 create vs resume"] --- P7
+  P3 --- P8["P8 subscription / terms"]
+  P4["P4 install method"] --- P7
+  P4 --- P9["P9 cluster type / platform"]
+  P4 --- P6["P6 egress"]
+  P5 --- P8
+  P6 --- P10["P10 Pod identity"]
+  P9 --- P7
 ```
 
-### Cluster mode: Autopilot vs Standard zonal vs Standard regional
+### P1 Tool restriction mechanism
 
-| option | facts for | facts against |
+| Option | Facts for | Facts against |
 |---|---|---|
-| Autopilot | Free tier covers one Autopilot cluster (pricing page, Q1). `kubectl exec` works (autopilot-security, Q1). gVisor on by default (sandbox-pods, Q5). Dataplane V2 default (how-to/network-policy, Q5, unverified). Billed on Pod requests with no node management (pricing, Q1). | New clusters are regional (autopilot-overview, Q1). FQDN policy only via update of an existing cluster, with node restarts of up to a few hours (fqdn page, Q5, unverified). Autopilot may change requests; minimums not read (Q1). Idle Running Pods are billed on requests (pricing, Q1). |
-| Standard zonal | Free tier covers one zonal cluster (pricing, Q1). Same Cluster Admin role (creating-a-zonal-cluster, Q1). Calico available (network-policy, Q5, unverified). | Billed by Compute VMs (pricing, Q1). gVisor needs a non-default node pool (sandbox-pods, Q5, unverified). PD is zonal; the Pod must run in the disk's zone (persistent-volumes, Q1). Node-pool scaling to zero details not fetched (Q1). |
-| Standard regional | Regional PD exists as a feature (persistent-volumes nav, Q1). | Free tier credit does not apply to the regional cluster fee or its compute (pricing "Free tier", Q1). Regional PD uses twice the quota per GiB (compute/resource-usage, Q1). |
+| `--allowedTools` | Executes listed tools without prompting; naming Grep/Glob restores both (docs/tools-reference) | Does not restrict availability; unlisted tools needing no approval run in `-p`; built-in read-only Bash set (cat, grep, find...) runs without prompt in every mode (docs/permissions, docs/headless) |
+| `--tools` | "Restrict which built-in tools Claude can use" (docs/cli-reference) | Does not affect MCP tools; those need `--disallowedTools "mcp__*"` (docs/cli-reference) |
+| `--disallowedTools` | Bare name removes tool from context (docs/cli-reference) | Scoped rule like `Bash(rm *)` denies only matching calls (docs/cli-reference) |
+| `--permission-mode dontAsk` | Auto-denies anything that would prompt (docs/permission-modes) | Resumed `-p` starts in the mode a new run would; flags like `--mcp-config`, `--settings` not restored on resume (docs/sessions) |
+| Managed keys (`allowManagedPermissionRulesOnly`, `disableBypassPermissionsMode`, ...) | Exist; the first also ignores `--allowedTools` (docs/settings-reference) | `Read(path)` applies best-effort to Grep/Glob; `Glob(path)` and `Write(path)` never match (docs/permissions) |
+| `--bare` | `-p` without it runs project hooks and connects `.mcp.json` servers (docs/headless) | `--bare` never reads OAuth credentials (docs/authentication) |
 
-### How a person logs in to a Pod
+Also: `-p` with no mode starts in Manual mode from v2.1.302; before it could start in auto mode on a third-party provider or with `DISABLE_TELEMETRY` (docs/headless, docs/permission-modes).
 
-| option | facts for | facts against |
+### P2 Credentials-file protection and verification
+
+| Option | Facts for | Facts against |
 |---|---|---|
-| `kubectl exec -it POD -- claude auth login` (PoC) | Reported as the working manual path in a K8s pod (gh #81545, unverified). Documented container flow is URL printed plus code pasted (DOC-TS, Q2). Credentials persist on a volume (DOC-AUTH dev container case, Q2). | Open reports of the code paste failing with 400 or Invalid code on headless Linux, cause unknown (gh #94708, unverified, Q2). No maintainer reply in any of the ten issues (Q2). A hang report on headless Linux incl. Docker, relation to login not stated (gh #90800, Q2). Whether #94708/#90800 reproduce on 2.1.316: undetermined (Q2). |
-| `kubectl exec` without `-t`, over pipes | Author reports the URL printed in plain text over pipes (gh #81545 comment, unverified, Q2). | A user report on one version, no stability guarantee; TTY need undocumented (Q2). |
-| `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` with `claude auth login` | Documented: exchanges the token without a browser (DOC-ENV, Q2). | Outside the fixed scenario: someone must supply a refresh token (Q2). Requires `CLAUDE_CODE_OAUTH_SCOPES` (DOC-ENV, Q2). |
-| Copy `.credentials.json` from another machine | Worked in one report (gh #94708 comment, unverified, Q2). | A scp copy still prompted for login in an older report (gh #22992, unverified, Q2). Copying also bears on the terms (Q4). |
+| Managed `permissions.deny` Read rule | Ranks above CLI flags and user/project settings; lists combine across managed files (docs/settings, docs/managed-settings); applies to file tools and `cat/head/tail/sed/tee` (docs/permissions) | Not applied to `grep -r` from the holding directory or subprocesses; Bash read-only set includes cat/grep/find (docs/permissions); env vars in rule paths undocumented; managed-file path row for `/path` absent; Read rules best-effort for Grep/Glob; no statement on deny in `-p` (docs/permissions, docs/settings) |
+| Sandbox | OS-level enforcement for Bash, PowerShell, Monitor and children (docs/permissions) | Does not cover Read/Grep/Glob (docs/permissions) |
+| File mode | Credentials file is mode 0600, plaintext (docs/authentication, docs/claude-directory) | The process runs as the same user that owns the file (inferred) |
+| Managed file as ConfigMap mount | Symlinks accepted, files reloaded on change (docs/managed-settings, docs/settings) | Unparseable file -> refuses to start; read-only mount and subPath not addressed (docs/managed-settings) |
 
-### Overlapping `claude -p` runs and idle logins
+### P3 Create-vs-resume logic and concurrency
 
-| option | facts for | facts against |
+| Option | Facts for | Facts against |
 |---|---|---|
-| Allow overlapping runs | Docs: parallel sessions on one machine coordinate renewal so one process refreshes at a time (DOC-TS, Q2). Same-Pod execs share one config directory and lock (gh #95822, unverified, Q2). Overlap message is documented as transient (DOC-ERR, Q2). | Two terminals resuming one session without forking interleave into one transcript (sessions, Q3). Before v2.1.211 two sessions could revoke the login (DOC-TS, Q2). Open reports of credentials blanked under concurrent processes: #88583 (macOS, 2.1.229-2.1.251), #98693, #12447 (unverified, Q2). No maintainer reply (Q2). |
-| Serialize runs per person | A `-p` run exiting before saving a rotated token (no concurrency) blanked a login (gh #102265, Linux, up to 2.1.303, unverified, Q2). | Serialization does not touch that single-process case (#102265, Q2). The docs state no overlap rule either way (Q2). |
-| Idle login | Warning appears 3 days before expiry and never blocks (DOC-AUTH, Q2). Observed access token about 8 hours, refresh token about 29 days (gh #88583 comment, unverified, Q2). | Total lifetime is not documented (Q2). After refresh is rejected credentials are cleared and only `/login` recovers (DOC-ERR, Q2). Short-lived commands such as `claude auth status` or `claude doctor` can lose a rotation (gh #95822, unverified, Q2). |
+| File-existence test, then `--session-id` or `--resume` | `--session-id` must be a valid UUID (docs/cli-reference); transcript path is `projects/<project>/<id>.jsonl` (docs/sessions); issue #86761 describes the guard as a .jsonl existence test | Existing-id behavior undocumented; project dir depends on cwd or `CLAUDE_CODE_PROJECT_DIR_NAME` (docs/sessions); issue #87399 reports "in use" without a .jsonl (Windows) |
+| Capture `session_id` from JSON, then `--resume` | Documented pattern with `jq -r '.session_id'` (docs/headless) | Equality of session_id on plain resume is inferred; no literal JSON example (docs/cli-reference, docs/headless) |
+| Fix project dir name | `CLAUDE_CODE_PROJECT_DIR_NAME` v2.1.234+, 1-64 chars, needs CLAUDE_CONFIG_DIR (docs/sessions) | Version-gated |
+| `--no-session-persistence` | Print-only flag (docs/cli-reference) | Makes sessions non-resumable |
+| Concurrent calls on one key | Docs: resuming twice without forking interleaves into one transcript; `--fork-session` makes a new id (docs/sessions, docs/cli-reference) | Issue #75761 two processes append to one jsonl; none found on concurrent `-p --resume`; a rejected refresh clears credentials and every request fails (docs/errors) |
 
-### How tools are restricted
+Further facts: `-p` sessions hidden from picker and `--continue` but found by `--resume <id>`; retention `cleanupPeriodDays` default 30; exit codes per failure not documented; issue #98610 empty stdout with exit 0; resume searches current project, worktrees, then other projects (v2.1.223+); issue #5768 (open) reports cwd-bound resume (docs/sessions, docs/claude-directory, docs/headless).
 
-| option | facts for | facts against |
+### P4 Installation method in the image
+
+| Option | Facts for | Facts against |
 |---|---|---|
-| `--allowedTools` | Pre-approves tools (cli-reference, Q3). `--allowedTools "Read,Grep,Glob"` restores Grep and Glob (tools-reference, Q3, unverified). | "To restrict which tools are available, use `--tools` instead" (cli-reference, Q3). Does not restrict (SDK docs, Q3). Bash stays available; unlisted calls needing approval are denied in `-p` Manual mode from v2.1.302 (headless, permission-modes, Q3). Whether restored on `--resume`: undocumented (Q3). |
-| `--tools` | Restricts built-in tools; `""` disables all (cli-reference, Q3). | Does not affect MCP tools (cli-reference, Q3). On Linux Grep and Glob are absent unless named (tools-reference, Q3, unverified). |
-| Deny rules (`--disallowedTools`, `permissions.deny`) | A bare name removes the tool; deny beats allow at any level (cli-reference, permissions, Q3). Managed deny cannot be overridden by `--allowedTools` (permissions, Q3). `allowManagedPermissionRulesOnly` makes `--allowedTools` ignored (settings-reference, Q3). | Read deny is best-effort for Grep and Glob (permissions, Q3). Bash coverage is partial: `grep -r pattern .` and scripts are not covered (permissions, Q3). Bash rules are not a security boundary (permissions, Q3). A `/path` rule resolves against the settings source; managed resolution not stated (Q3). |
-| Managed settings file in the Pod | `/etc/claude-code/managed-settings.json` on Linux; managed keys cannot be overridden by user or `--settings` (managed-settings, settings, Q2/Q3). | Read-only, symlink and ConfigMap mount behavior not stated; ConfigMap subPath mounts get no updates (volumes page, Q3). Root-only file with non-root user: policy silently not applied (managed-settings, Q2, unverified). Who can write the file in a container: undetermined (Q3). Unparseable file stops startup (Q3). |
+| Native installer | `curl -fsSL https://claude.ai/install.sh \| bash`, `-s stable` or version (docs/setup) | Installs under the installing user's home; auto-update on; deletes old versions itself; unreadable binary in a running session -> Bus error (docs/setup); minimum glibc not found |
+| npm | Official devcontainer Dockerfile uses `USER node` and pinned `npm install -g` (anthropics/claude-code `.devcontainer/Dockerfile`); binary does not invoke Node (docs/setup) | Needs Node 22+ to install; no sudo npm (docs/setup) |
+| apt/dnf/apk | Repos at downloads.claude.ai (docs/setup) | No auto-update (docs/setup) |
+| Update control | `DISABLE_AUTOUPDATER=1`; `DISABLE_UPDATES=1`; `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (docs/env-vars, docs/devcontainer) | `claude update` still works manually under DISABLE_AUTOUPDATER |
 
-### Unit of isolation per person: Pod, or namespace
+Platform facts: Alpine needs libgcc, libstdc++, ripgrep, `USE_BUILTIN_RIPGREP=0`; no-AVX CPUs give "Illegal instruction"; x64 or ARM64 (docs/setup, docs/troubleshoot-install). A native-installer non-root Dockerfile was not found.
 
-| option | facts for | facts against |
+### P5 forceLoginOrgUUID placeholder and org
+
+| Option | Facts for | Facts against |
 |---|---|---|
-| Pod per person, shared namespace | Names can be unique per Pod. One PSA level for all (pod-security-admission, Q5). | Roles for `pods/exec` can be limited with `resourceNames`, but RBAC is additive (rbac, Q5, unverified). Create-Pod rights in the namespace implicitly allow mounting PVCs (rbac-good-practices, Q5, unverified). ResourceQuota is per namespace only (resource-quotas, Q5). |
-| Namespace per person | RBAC, NetworkPolicy, ResourceQuota, LimitRange, PSA are namespace scoped (multi-tenancy, Q5, unverified). GKE guidance: namespaces for logical isolation (enterprise-multitenancy, Q5). K8s: common practice is one namespace per workload (Q5). | Containers share a kernel; namespaces give no kernel isolation (multi-tenancy, Q5). PV is cluster-wide (Q5). Default network is all-to-all until a policy exists (how-to/network-policy, Q5). |
-| Access paths that cross the unit | IAM has no per-object grants; `roles/container.developer` includes `pods.exec` and `secrets.get` on all clusters in the project (access-control, iam roles, Q5, unverified). `nodes/proxy` allows exec on every Pod of a node (rbac-good-practices, Q5). `cluster-admin` is a super-user (rbac, Q5). | Contents of `roles/container.clusterViewer` for exec: not read; Compute roles on the PD behind a PVC: not searched (Q5). |
-| Runtime sandbox (gVisor, microVM, agent-sandbox) | gVisor default on Autopilot; targets kernel exfiltration between tenants (sandbox-pods, Q5, unverified). agent-sandbox gives stable identity and persistent storage per sandbox (README, Q5, unverified). | `seccomp`, AppArmor and No New Privileges are unsupported in sandboxed Pods; port-forward unsupported under gVisor (sandbox-pods, Q5). `kubectl exec` under gVisor: not stated (Q5). agent-sandbox install is cluster-wide CRDs (README, Q5). Google page example uses 1.0.6 vs upstream v1.0.9 (Q5). It does not isolate the network (sandbox-pods "External dependencies", Q5). |
+| Real org UUID | Shown at claude.ai/admin-settings/organization (Teams/Enterprise) or platform.claude.com/settings/organization (Console) (docs/authentication) | Source for a personal subscription not stated |
+| Placeholder string | None found | Mismatch -> login error and exit at startup; format validation undocumented (docs/settings-reference, docs/authentication) |
+| Omit key, keep `forceLoginMethod: claudeai` | `forceLoginMethod` values "claudeai", "console", "gateway" (docs/settings-reference) | `forceLoginOrgUUID` only enforced by a managed source; `claude auth login` not named in the enforcement list (docs/authentication) |
+| Empty array | None | Users "can't start Claude Code or complete a login" (docs/authentication) |
 
-### How network egress is limited
+Also: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper` blocked at startup when forceLogin* set; issue #56935 (closed, not planned) reports setup-token tokens fail; remote managed settings fetched only for direct API auth; managed file unparseable -> refuses to start (docs/authentication, docs/managed-settings).
 
-| option | facts for | facts against |
+### P6 Egress restriction method
+
+| Option | Facts for | Facts against |
 |---|---|---|
-| Kubernetes NetworkPolicy, default-deny egress | Enforced by Dataplane V2 on Autopilot (how-to/network-policy, Q5, unverified). | Default-deny egress also blocks DNS; a DNS rule is needed (network-policies, Q5, unverified). Selectors are IP, Pod, namespace, not hostnames (Q5). Needs a plugin that implements it (Q5). |
-| `FQDNNetworkPolicy` (`networking.gke.io/v1alpha1`) | Matches domain names; honors DNS TTL (fqdn page, Q5, unverified). Combines with NetworkPolicy by union (Q5). | Enforced at IP and port; a shared IP allows all domains on it, e.g. `storage.googleapis.com` (Q5). Cannot target ClusterIP Services, so DNS needs a label-based policy (Q5). Max 50 IPs. Autopilot enable by update only (Q5). |
-| Host list to allow | Required: `api.anthropic.com`, `claude.ai`, `claude.com`, `platform.claude.com` (OAuth exchange and refresh); `sso.claude.com` for SSO orgs; `mcp-proxy.anthropic.com` for claude.ai users (network-config, Q5, unverified). | Needs for the code-paste login flow beyond this list: not stated (Q5). Cloud NAT for private clusters: not searched (Q5). Optional hosts exist, switchable by env vars (Q5). |
+| No policy | By default all Pods communicate freely (network-policy page) | Not a restriction |
+| IP/CIDR NetworkPolicy | Dataplane V2 enforcement always on in Autopilot; Calico in Standard (network-policy page) | Standard policy is IP/CIDR based (kubernetes.io); DPv2 + Workload Identity needs egress to 169.254.169.254/32 ports 80, 8080; DNS must be allowed incl. `node-local-dns`; no exact default-deny manifest found |
+| FQDNNetworkPolicy | `name:`/`pattern:` hostnames (fqdn-network-policies page) | v1alpha1; max 50 resolved IPs per policy, 100 per hostname; Autopilot only via updating existing cluster; needs DPv2 and kube-dns or Cloud DNS |
+| Proxy | `HTTPS_PROXY`/`NO_PROXY` supported (docs/network-config) | SOCKS proxies unsupported (docs/network-config) |
 
-### Terms: operator-hosted storage of a person's login, and the Commercial Terms condition
+Endpoints (docs/network-config): api.anthropic.com, claude.ai, claude.com, platform.claude.com, sso.claude.com, downloads.claude.ai, mcp-proxy.anthropic.com (`ENABLE_CLAUDEAI_MCP_SERVERS=false` disables), storage.googleapis.com, registry.npmjs.org, github.com, raw.githubusercontent.com, Datadog intake hosts (optional telemetry; `DISABLE_TELEMETRY`/`DO_NOT_TRACK`), code.claude.com. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` disables auto-updates, telemetry, error reporting, feature-flag fetching (docs/env-vars). Login token exchange uses platform.claude.com.
 
-| option (reading) | facts for | facts against |
+### P7 Storage and volume ownership
+
+| Option | Facts for | Facts against |
 |---|---|---|
-| Person signs in to the unmodified binary on an owner-run Pod | Carve-out names end users signing in with their own subscription, including where a platform hosts Claude Code (legal-and-compliance, Q4). Usage is billed to the end user (Q4). | "platform", "hosts", "end user", "customers" are not defined (Q4). Whether a personal project's Pod is "hosted sandboxes or other agent infrastructure": not stated (Q4). |
-| Login file on an owner-controlled volume | Carve-out covers API keys and cloud provider credentials stored by the customer, not OAuth tokens (Q4). | "developers may not collect, store, or intermediate Claude.ai credentials or session tokens" and Consumer Terms section 2 "may not share ... login information" (Q4). Not defined for a file the unmodified binary writes on the operator's disk and the operator does not read (Q4). "Anthropic's own flow" not described for headless sign-in (Q4). |
-| Commercial Terms condition | Running Claude Code in hosted sandboxes "requires agreeing to our Commercial Terms of Service and complying with the conditions below" (Q4). Three conditions: unmodified binary, no paying, reselling or intermediating, name and logo use (Q4). | Commercial Terms say "not for consumer use" and do not contain "Claude Code", "Team", "Enterprise" or "seat"; the Team/Enterprise mapping is only on the Claude Code legal page (Q4). The text does not say how Commercial Terms acceptance fits a Pro or Max user under Consumer Terms, or whether an individual can accept them (Q4). |
-| Script running `claude -p` | Terms text on `-p`: none found in any page searched (Q4). | Consumer Terms 3 prohibits "automated or non-human means ... script" except via API key or explicit permission (Q4). "ordinary, individual usage" is not defined (Q4). Support articles say nothing on automation (Q4). |
+| PVC at CLAUDE_CONFIG_DIR | `.claude.json` moves inside CLAUDE_CONFIG_DIR when set; otherwise `~/.claude.json` is lost on rebuild (docs/env-vars, docs/devcontainer); StatefulSet keeps PVC on delete/scale-down (Retain, stable v1.32) | RWO only, zonal disk tied to one zone (concepts/persistent-volumes); `standard-rwo` uses WaitForFirstConsumer; credentials plaintext 0600 live on the volume; retention deletes files older than `cleanupPeriodDays` |
+| fsGroup ownership | Recursive chown at mount; `fsGroupChangePolicy` OnRootMismatch/Always | Large PVs can make mounts fail; no effect on configMap/secret/emptyDir; PD driver VOLUME_MOUNT_GROUP support not determined; unset runAsGroup means GID 0 |
+| Native-install paths | Launcher and versions under installing user's home (docs/setup) | `claude auth login --console` stores profile at `~/.config/anthropic`, outside CLAUDE_CONFIG_DIR (docs/authentication) |
 
-Could not be determined, and who could answer:
+Cluster storage classes on the live cluster: not checked.
 
-| open item | who could answer |
+### P8 Subscription and terms fit
+
+| Option | Facts for | Facts against |
+|---|---|---|
+| Subscription login in Pod, `claude -p` | `claude -p` draws from subscription limits (support article, Oct 7, 2026); legal page does not prevent "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code" (docs/legal-and-compliance) | OAuth "intended exclusively for purchasers of ... plans ... ordinary use"; limits "assume ordinary, individual usage"; Anthropic "may [enforce] without prior notice"; setup page says free plan lacks Claude Code (docs/legal-and-compliance, docs/setup); June 15, 2026 note says changes paused, "nothing has changed" |
+| API-key authentication | Legal page: developers building products or services "should use API key authentication" | Out of scope; in `-p` the key is always used when present (docs/authentication) |
+
+Also: developers "may not collect, store, or intermediate Claude.ai credentials or session tokens"; binary must not be modified; each end user authenticates with own credentials (docs/legal-and-compliance). Refresh failure in `-p` gives "OAuth session expired and could not be refreshed"; `/login` unavailable in `-p`. `-p` without `--bare` runs project hooks and `.mcp.json` servers (docs/headless). Token TTLs not found.
+
+### P9 Cluster type and image platform
+
+| Option | Facts for | Facts against |
+|---|---|---|
+| Autopilot | Default `standard-rwo`; DPv2 default; WI always on; RuntimeDefault seccomp applied (autopilot-security) | Resource min/max and ratio limits; strictly enforced security measures; reject-vs-mutate of non-Restricted Pods not determined; FQDN policy enabled only by updating an existing cluster |
+| Standard | Calico available for NetworkPolicy (network-policy page) | NetworkPolicy without DPv2 needs add-on, enforced on node re-creation |
+| x86 image | GKE schedules x86 nodes by default (prepare-arm-workloads) | Apple Silicon builds arm64 by default (not sourced) |
+| arm64 or multi-arch image | Multi-arch images schedule on either; Claude Code supports ARM64 (docs/setup) | Arm nodes tainted `kubernetes.io/arch=arm64:NoSchedule` |
+| Restricted-style securityContext | PSS Restricted fields listed (kubernetes.io PSS page); allowPrivilegeEscalation true if unset | GKE default pod-security namespace labels not determined |
+
+Also: Artifact Registry push path and `gcloud auth configure-docker`; creation names `roles/artifactregistry.admin`; node pull via Compute Engine default SA, `roles/artifactregistry.reader` if Editor disabled; `kubectl` needs `gke-gcloud-auth-plugin`, exec needs `pods/exec` (cluster-access-for-kubectl); minimum 4 GB RAM for Claude Code; Alpine needs extra packages. Live cluster type and node arch: not checked.
+
+### P10 Pod identity
+
+| Option | Facts for | Facts against |
+|---|---|---|
+| Workload Identity with a no-permission KSA | Always on in Autopilot; enabling grants no IAM permissions; Pods with no KSA use the namespace `default` KSA | Compute metadata server unreachable once the GKE metadata server is on; hostNetwork Pods don't use it |
+| No Workload Identity | None | Pods inherit the node service account; "Each node's service account credentials continue to be exposed to workloads." |
+| `automountServiceAccountToken: false` | Stops mounting the Kubernetes API token (ServiceAccount or Pod; Pod wins) | Page does not address GCP access |
+
+Source for all P10 rows: https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity; .../how-to/workload-identity; .../how-to/protecting-cluster-metadata; https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/ (sub-agent).
+
+### Could not be determined
+
+| Item | Who could answer |
 |---|---|
-| Whether an owner-run Pod holding a person's login file counts as "collect, store, or intermediate" | Anthropic sales or support (legal page names sales for authentication questions) |
-| Whether `claude -p` through `kubectl exec` is "automated or non-human means" or "explicitly permitted" | Anthropic support |
-| How the Commercial Terms condition applies to an individual owner and Pro/Max users | Anthropic sales or support |
-| Whether `claude auth login` needs a TTY; whether the code-paste failures in #94708 reproduce on 2.1.316 | A test in a real Pod; Anthropic maintainers |
-| Behavior of `--session-id` with an existing ID; `-p` exit code on expired login; whether `--allowedTools` is restored on resume | A test with the CLI (not run: `claude -p` excluded in research) |
-| Whether Compute Engine API must be enabled for cluster creation; org policy constraints; Autopilot minimum requests | A test in the project; Google docs |
-| Whether exec works under gVisor; roles able to read the PD behind a PVC; ResourceQuota vs Autopilot mutated requests | Google docs; a test in a real cluster |
-| Refresh-token lifetime, rotation, whether the lock works across Pods sharing a volume | Anthropic support |
-
-## Out of scope findings
-
-- `claude setup-token` creates a one-year token that can only make model requests and cannot establish Remote Control sessions (DOC-AUTH); the issue #22992 reports subscription features missing with `CLAUDE_CODE_OAUTH_TOKEN`. Belongs to the operator-owned token issue.
-- `forceLoginMethod` and `forceLoginOrgUUID` details (DOC-SR, DOC-MS); whether `claude auth login` enforces them: undetermined. Belongs to a policy issue.
-- Agent Substrate on GKE (actor-based, Standard only) and Agent Sandbox pricing "no extra charge" (how-install-agent-sandbox). Belongs to a runtime-isolation issue.
-- Devcontainer "Persist authentication and settings across rebuilds" page: linked from DOC-AUTH, not read.
-- `claude -p --bare` does not read OAuth credentials (DOC-HL); relevant to any later wrapper change.
-- Slack, gateway, multi-region and production hardening: not researched.
+| Cluster type (Autopilot/Standard), node arch, current context, storage classes, NetworkPolicy enforcement | Running the live cluster |
+| Whether Autopilot rejects or mutates a Pod missing Restricted fields; GKE default pod-security labels | Running the live cluster |
+| reclaimPolicy of `standard-rwo`; PD driver VOLUME_MOUNT_GROUP support | Running the live cluster |
+| Whether `container.developer` includes `pods/exec` | Running the live cluster |
+| Behavior of `--session-id` on an existing id in `-p`; exit code for missing session / denied tool / is_error | A test in the Pod |
+| Whether deny rules apply in `-p`; text the model receives for a denied tool | A test in the Pod |
+| Env-var expansion in deny rule paths; ConfigMap/read-only mount behavior of the managed file | A test in the Pod |
+| forceLoginOrgUUID placeholder handling; whether `claude auth login` enforces it | A test in the Pod |
+| Same session_id after plain resume; literal JSON of `-p --output-format json`; concurrent `-p --resume` | A test in the Pod |
+| Retention basis (mtime vs creation) | A test in the Pod |
+| Access/refresh token lifetimes; minimum glibc | A test in the Pod |
+| Whether the personal subscription type has an org UUID and where it is shown | The user |
+| Which plan the user holds and its terms fit | The user |
 
 ## Sources
 
-- Claude Code docs, code.claude.com/docs/en/: authentication (DOC-AUTH), errors (DOC-ERR), claude-directory (DOC-DIR), managed-settings (DOC-MS), settings-reference (DOC-SR), troubleshoot-install (DOC-TS), headless (DOC-HL), cli-reference, env-vars (DOC-ENV), settings, sessions, permissions, permission-modes, tools-reference, agent-sdk/typescript, network-config, legal-and-compliance.
-- Terms: anthropic.com/legal/consumer-terms, anthropic.com/legal/commercial-terms, anthropic.com/legal/aup; support.claude.com/en/articles/11145838 and /11845131.
-- Issues anthropics/claude-code: #81545, #22992, #94708, #90906, #90800, #98693, #88583, #102265, #95822, #12447 (read with `gh issue view`).
-- Google Cloud docs at docs.cloud.google.com/kubernetes-engine/docs: creating-an-autopilot-cluster, creating-a-zonal-cluster, concepts/autopilot-overview, autopilot-security, autopilot-resource-requests, persistent-volumes, sandbox-pods, access-control, best-practices/enterprise-multitenancy, how-to/network-policy, fqdn-network-policies, how-install-agent-sandbox, api-server-authentication, cluster-access-for-kubectl, quotas; cloud.google.com/kubernetes-engine/pricing; artifact-registry pushing-and-pulling; compute/resource-usage; iam roles container.
-- Kubernetes docs at kubernetes.io/docs: multi-tenancy, pod-security-standards, pod-security-admission, rbac, rbac-good-practices, resource-quotas, limit-range, network-policies, volumes, kubectl_exec reference, get-shell-running-container; kubernetes/kubernetes `exec.go` and `helpers.go`.
-- github.com/kubernetes-sigs/agent-sandbox README and `gh api repos/kubernetes-sigs/agent-sandbox/releases/latest` (v1.0.9).
-- Commands: `gcloud billing projects describe`, `gcloud services list --enabled`, `gcloud container clusters list`, `gcloud compute networks list`, `gcloud org-policies list`, `gcloud projects get-iam-policy`, `gcloud artifacts repositories list`, `gcloud beta quotas info list`, Cloud Billing Catalog API, `claude --version`, `claude auth login --help`, `claude --help`.
+- https://code.claude.com/docs/en/setup
+- https://code.claude.com/docs/en/troubleshoot-install
+- https://code.claude.com/docs/en/devcontainer
+- https://code.claude.com/docs/en/env-vars
+- https://code.claude.com/docs/en/claude-directory
+- https://code.claude.com/docs/en/authentication
+- https://code.claude.com/docs/en/sessions
+- https://code.claude.com/docs/en/cli-reference
+- https://code.claude.com/docs/en/headless
+- https://code.claude.com/docs/en/permissions
+- https://code.claude.com/docs/en/permission-modes
+- https://code.claude.com/docs/en/tools-reference
+- https://code.claude.com/docs/en/managed-settings
+- https://code.claude.com/docs/en/settings
+- https://code.claude.com/docs/en/settings-reference
+- https://code.claude.com/docs/en/network-config
+- https://code.claude.com/docs/en/errors
+- https://code.claude.com/docs/en/legal-and-compliance
+- https://code.claude.com/docs/en/agent-sdk/typescript
+- https://raw.githubusercontent.com/anthropics/claude-code/main/.devcontainer/Dockerfile
+- https://github.com/anthropics/claude-code/issues/86761, /87399, /5768, /75761, /98610, /56935
+- https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
+- https://support.claude.com/en/articles/11145838-using-claude-code-with-your-pro-or-max-plan
+- https://docs.cloud.google.com/kubernetes-engine/docs/concepts/persistent-volumes
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/gce-pd-csi-driver
+- https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-security
+- https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-resource-requests
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/network-policy
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/nodelocal-dns-cache
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/fqdn-network-policies
+- https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/protecting-cluster-metadata
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/prepare-arm-workloads-for-deployment
+- https://docs.cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl
+- https://docs.cloud.google.com/artifact-registry/docs/docker/authentication
+- https://docs.cloud.google.com/artifact-registry/docs/docker/store-docker-container-images
+- https://docs.cloud.google.com/artifact-registry/docs/integrate-gke
+- https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+- https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/
+- https://kubernetes.io/docs/concepts/security/pod-security-standards/
+- https://kubernetes.io/docs/concepts/services-networking/network-policies/
+- https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/
 
-## Gaps
+## Evidence gaps
 
-- Wrapper behavior of the PoC files under `gke-claude-agent/poc/` was not described in the evidence; Flow sequence 2 shows the script logic only as the task statement gives it.
-- Exit code of a failing `-p` run on expired login: not in the evidence.
-- Enforcement wording of the Usage Policy: the evidence's extraction was truncated.
+- Minimum glibc version; a documented native-installer non-root Dockerfile.
+- Exit codes for missing session, denied tool, is_error; literal JSON example of `-p --output-format json`.
+- Behavior of `--session-id` with an existing id in `-p` (only GitHub issues).
+- Placeholder/format handling of forceLoginOrgUUID; whether `claude auth login` enforces it.
+- Read-only mount / ConfigMap subPath behavior of the managed file; env-var expansion in rule paths; deny behavior in `-p`.
+- Access/refresh token TTLs; `--claudeai` flag.
+- Live cluster state (type, arch, storage classes, NetworkPolicy enforcement, context); Autopilot reject-vs-mutate; default pod-security labels; reclaimPolicy of `standard-rwo`; PD driver VOLUME_MOUNT_GROUP; `pods/exec` in `container.developer`.
+- Retention mtime-vs-creation basis.
