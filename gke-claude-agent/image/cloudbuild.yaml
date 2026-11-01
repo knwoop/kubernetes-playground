@@ -1,0 +1,13 @@
+# Native linux/amd64 build on Cloud Build (local amd64 emulation crashes the installer).
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg=CLAUDE_CODE_VERSION=${_CLAUDE_CODE_VERSION}
+      - --platform=${_PLATFORM}
+      - --tag=${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+options:
+  logging: CLOUD_LOGGING_ONLY

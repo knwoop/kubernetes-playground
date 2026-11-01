@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-managed-settings
+  namespace: claude-agent
+data:
+  managed-settings.json: |
+    {
+      "forceLoginMethod": "claudeai",
+      "forceLoginOrgUUID": "REPLACE_WITH_ORG_UUID",
+      "permissions": {
+        "deny": [
+          "Read(//home/claude/.claude/.credentials.json)",
+          "Read(~/.claude/.credentials.json)"
+        ]
+      }
+    }

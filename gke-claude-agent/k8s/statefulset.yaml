@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: claude
+  namespace: claude-agent
+spec:
+  serviceName: claude
+  replicas: 1
+  selector:
+    matchLabels:
+      app: claude
+  template:
+    metadata:
+      labels:
+        app: claude
+    spec:
+      serviceAccountName: claude
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: claude
+          image: ${IMAGE}
+          workingDir: /workspace/repo
+          env:
+            - name: CLAUDE_CONFIG_DIR
+              value: /home/claude/.claude
+            - name: CLAUDE_CODE_PROJECT_DIR_NAME
+              value: work
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          volumeMounts:
+            - name: claude-config
+              mountPath: /home/claude/.claude
+            - name: managed-settings
+              mountPath: /etc/claude-code/managed-settings.json
+              subPath: managed-settings.json
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace/repo
+      volumes:
+        - name: managed-settings
+          configMap:
+            name: claude-managed-settings
+        - name: workspace
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: claude-config
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
