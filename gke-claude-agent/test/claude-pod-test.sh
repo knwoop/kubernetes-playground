@@ -25,6 +25,8 @@ uuid_a="$("$POD" --print-session-id a)"; uuid_b="$("$POD" --print-session-id b)"
 ok_json() { printf '{"type":"result","is_error":false,"result":"hi","session_id":"%s"}' "$1" > "$TMP/c.json"; }
 has_arg() { tr '\0' '\n' < "$TMP/args" | grep -qxF -- "$1" && echo yes || echo no; }
 
+# Golden value: if this changes, every existing conversation is orphaned. Change it only on purpose.
+check "known key maps to the pinned uuid" "$("$POD" --print-session-id golden-key)" "60ffd38b-487e-59f3-b427-3070271e7a6e"
 check "same key, same uuid" "$("$POD" --print-session-id a)" "$uuid_a"
 check "different key, different uuid" "$([[ $uuid_a != "$uuid_b" ]] && echo yes)" "yes"
 
