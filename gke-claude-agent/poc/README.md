@@ -7,7 +7,7 @@ Status: files written, **nothing built, applied or run**. `kubectl` is not insta
 | file | purpose |
 |---|---|
 | `Dockerfile` | official installer, non-root user `claude` (uid 1000), `sleep infinity` |
-| `k8s/` | Namespace `claude-poc`, ServiceAccount (no token, no GCP identity), managed-settings ConfigMap, StatefulSet `claude` (replicas 1, PVC at `/home/claude/.claude`), optional `networkpolicy.yaml` (not in the kustomization) |
+| `k8s/` | Namespace `claude-poc`, ServiceAccount (no token, no Google Cloud identity), managed-settings ConfigMap, StatefulSet `claude` (replicas 1, PVC at `/home/claude/.claude`), optional `networkpolicy.yaml` (not in the kustomization) |
 | `claude-pod` | `claude-pod <conversation-key> "<prompt>"` |
 
 ## Build and apply
@@ -15,7 +15,7 @@ Status: files written, **nothing built, applied or run**. `kubectl` is not insta
 Nothing project-specific is stored in the files. Set these in your shell:
 
 ```bash
-export PROJECT_ID=...        # GCP project
+export PROJECT_ID=...        # Google Cloud project
 export REGION=...            # Artifact Registry region
 export REPO=...              # Artifact Registry repository
 export CLAUDE_ORG_UUID=...   # your organization UUID (forceLoginOrgUUID)

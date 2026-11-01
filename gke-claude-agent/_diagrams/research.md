@@ -17,7 +17,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   repo["Repo: empty, one directory"]:::boundary
-  proj["GCP project: billing on"]
+  proj["Google Cloud project: billing on"]
   apis["container, compute, secretmanager: off"]:::changed
   gke["GKE cluster: not created"]:::changed
   pod["Pod: claude CLI / Agent SDK"]
@@ -34,7 +34,7 @@ flowchart LR
   classDef boundary fill:#eaeef2,stroke:#8c959f,stroke-dasharray:3 3,color:#57606a
 ```
 
-Sources: [research.md, GCP project state](../research.md), [Claude Code runtime](../research.md)
+Sources: [research.md, Google Cloud project state](../research.md), [Claude Code runtime](../research.md)
 
 ## Which cluster mode?
 

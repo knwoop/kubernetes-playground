@@ -1,6 +1,6 @@
 # GKE for a Claude Code agent platform: research (2026-11-01)
 
-Question: what has to be known before planning "spin up GKE in a personal GCP project, run the owner's own Claude Code as an agent on it (authenticated with a Claude subscription token), with an AI agent platform as the long-term goal". Why: the issue's stated goal. Out of scope: choosing an approach, writing manifests, enabling any API (research was read-only).
+Question: what has to be known before planning "spin up GKE in a personal Google Cloud project, run the owner's own Claude Code as an agent on it (authenticated with a Claude subscription token), with an AI agent platform as the long-term goal". Why: the issue's stated goal. Out of scope: choosing an approach, writing manifests, enabling any API (research was read-only).
 
 - Issue: kubernetes-playground-mg1 / Commit: 29ac114 on kubernetes-playground-mg1-gke-claude-code-agent-plan
 - All external pages fetched 2026-11-01. "Verified" = re-checked by me; others are sub-agent reports.
@@ -18,7 +18,7 @@ Question: what has to be known before planning "spin up GKE in a personal GCP pr
 
 ```mermaid
 flowchart LR
-  Repo[Repo: empty, one-dir constraint] --> GCP[GCP project: billing on, container/compute/secretmanager APIs off]
+  Repo[Repo: empty, one-dir constraint] --> GCP[Google Cloud project: billing on, container/compute/secretmanager APIs off]
   GCP --> GKE[GKE: Autopilot or Standard]
   GKE --> Pod[Pod running claude CLI / Agent SDK]
   Auth[setup-token OAuth token] -->|env CLAUDE_CODE_OAUTH_TOKEN| Pod
@@ -27,7 +27,7 @@ flowchart LR
   GKE -.-> Sandbox[agent-sandbox CRDs / gVisor, optional]
 ```
 
-### GCP project state
+### Google Cloud project state
 | what | value | where |
 |---|---|---|
 | billing | enabled | `gcloud billing projects describe` (verified) |
