@@ -15,7 +15,7 @@ gcloud container clusters get-credentials "$GKE_CLUSTER_NAME" --location "$GKE_L
 | Item | Result | Evidence |
 |------|--------|----------|
 | Cluster mode | Autopilot | `gcloud container clusters describe ... --format="value(autopilot.enabled)"` → `True` |
-| Node architecture | amd64 expected; **not yet observed** | Autopilot has no nodes until a Pod is scheduled (`kubectl get nodes` → `No resources found`). Autopilot's default compute class is x86. Confirm with `kubectl get nodes -L kubernetes.io/arch` once `claude-0` is scheduled (deploy child). If it is arm64, rebuild the image with `--platform linux/arm64`. |
+| Node architecture | amd64 expected; **not yet observed** | Autopilot has no nodes until a Pod is scheduled (`kubectl get nodes` → `No resources found`). Autopilot's default compute class is x86. The deploy child owns this check: after `claude-0` is scheduled, run `kubectl get nodes -L kubernetes.io/arch`. If it is arm64, stop and ask before continuing; the image must then be rebuilt with `PLATFORM=linux/arm64` (see `image/build.sh`), which needs a native arm64 builder and is untested. |
 | Default StorageClass | `standard-rwo` (PD CSI), reclaim `Delete`, `WaitForFirstConsumer` | `kubectl get storageclass` |
 | NetworkPolicy enforcement | Yes, Dataplane V2 | `networkConfig.datapathProvider` → `ADVANCED_DATAPATH`, so `FQDNNetworkPolicy` is available |
 | `kubectl` reachable | OK | `kubectl config current-context` points at the cluster; `kubectl get storageclass` succeeds |
