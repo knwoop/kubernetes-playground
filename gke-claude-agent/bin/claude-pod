@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# claude-pod <conversation-key> "<prompt>"
+# Drive Claude Code in the Pod with `kubectl exec` + `claude -p`. The same key always maps
+# to the same session, so a conversation continues across calls and across Pod recreation.
+#
+#   claude-pod --print-session-id <key>   print the session UUID for a key; no kubectl call
+#
+# Env: CLAUDE_POD_NAMESPACE (default claude-agent), CLAUDE_POD_NAME (default claude-0).
+set -euo pipefail
+
+# Fixed namespace for deriving session UUIDs from keys. Changing it orphans every conversation.
+NS_UUID="0fd4b911-936d-4f31-b466-9ca53760f4b6"
+
+namespace="${CLAUDE_POD_NAMESPACE:-claude-agent}"
+pod="${CLAUDE_POD_NAME:-claude-0}"
+
+session_uuid() {
+  python3 -I -c 'import sys, uuid; print(uuid.uuid5(uuid.UUID(sys.argv[1]), sys.argv[2]))' "$NS_UUID" "$1"
+}
+
+die() { echo "claude-pod: $*" >&2; exit 2; }
+
+if [[ "${1:-}" == "--print-session-id" ]]; then
+  [[ $# -eq 2 ]] || die "usage: claude-pod --print-session-id <key>"
+  session_uuid "$2"
+  exit 0
+fi
+
+[[ $# -eq 2 ]] || die "usage: claude-pod <conversation-key> \"<prompt>\""
+key="$1"
+prompt="$2"
+[[ -n "$key" ]] || die "conversation key must not be empty"
+
+uuid="$(session_uuid "$key")"
+
+# No -t and no -i: stdout stays clean JSON and stderr stays separate.
+kexec() { kubectl exec -n "$namespace" "$pod" -- "$@"; }
+
+# The remote command always exits 0 and prints present/absent, so a kubectl failure
+# (no Pod, no access) is not mistaken for "no session yet".
+# shellcheck disable=SC2016 # the variables must expand inside the Pod, not here
+state="$(kexec sh -c 'if ls "$CLAUDE_CONFIG_DIR"/projects/*/"$1".jsonl >/dev/null 2>&1; then echo present; else echo absent; fi' sh "$uuid")" \
+  || exit $?
+
+case "$state" in
+  present) mode=--resume ;;
+  absent) mode=--session-id ;;
+  *) die "unexpected session check output: $state" ;;
+esac
+
+rc=0
+# shellcheck disable=SC2016 # "$@" must expand inside the Pod
+out="$(kexec sh -c 'cd /workspace/repo && exec "$@"' sh \
+  claude -p --output-format json \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob \
+  "$mode" "$uuid" -- "$prompt")" || rc=$?
+
+if [[ -z "$out" ]]; then
+  echo "claude-pod: no output from claude (exit $rc)" >&2
+  exit "$((rc != 0 ? rc : 1))"
+fi
+
+if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
+  echo "claude-pod: output is not JSON:" >&2
+  echo "$out" >&2
+  exit "$((rc != 0 ? rc : 1))"
+fi
+
+if [[ "$(jq -r '(.is_error // false) or (.result == null)' <<<"$out")" == "true" ]]; then
+  jq -r '"claude-pod: claude reported an error: subtype=\(.subtype // "-")", (.errors // [] | .[]? | "  \(.)"), (if .result != null then "  \(.result)" else empty end)' <<<"$out" >&2
+  exit 1
+fi
+
+jq -r '.result' <<<"$out"
+echo "session_id: $(jq -r '.session_id' <<<"$out")"
