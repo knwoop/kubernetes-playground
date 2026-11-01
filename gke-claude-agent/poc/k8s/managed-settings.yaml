@@ -7,7 +7,7 @@ data:
   managed-settings.json: |
     {
       "forceLoginMethod": "claudeai",
-      "forceLoginOrgUUID": "REPLACE-WITH-YOUR-ORG-UUID",
+      "forceLoginOrgUUID": "${CLAUDE_ORG_UUID}",
       "permissions": {
         "deny": [
           "Read(//home/claude/.claude/.credentials.json)",

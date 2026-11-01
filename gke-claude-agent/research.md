@@ -141,3 +141,58 @@ Small community Claude Code operators exist (e.g. AhmadMasry/claude-self-hosted-
 
 ## Sources
 code.claude.com/docs/en/{headless,authentication,legal-and-compliance,agent-sdk/hosting,devcontainer,network-config}; support.claude.com/en/articles/11145838; github.com/anthropics/claude-cookbooks (claude_agent_sdk/hosting); cloud.google.com/kubernetes-engine/pricing; docs.cloud.google.com/kubernetes-engine/docs/{concepts/choose-cluster-mode,concepts/autopilot-security,quotas,concepts/machine-learning/agent-sandbox,tutorials/agentic-adk-vertex}; github.com/kubernetes-sigs/agent-sandbox; github.com/kagent-dev/kagent; coder.com/docs/@main/ai-coder/tasks; dev.to/hnykda/running-claude-code-as-a-kubernetes-job-25d1; gcloud read-only calls (`services list`, `billing projects describe`, `container clusters list`).
+
+## Follow-up: each person logs in with their own account (2026-11-01)
+
+Scenario: one Pod per person, `claude auth login` run by that person in the Pod, credentials on a PVC at `CLAUDE_CONFIG_DIR`, a laptop script runs `claude -p` through `kubectl exec`. No operator-owned token or key. Sources are `code.claude.com/docs/en/*` unless noted. "V" = I re-checked it; the rest is from sub-agent reports.
+
+### Policy text (EN / JA quotes in `legal-and-compliance`, V for the first two rows)
+| topic | what the text says | what it does not say |
+|---|---|---|
+| carve-out | an end user may sign in to the unmodified binary with their own subscription, "including where a platform hosts Claude Code" (V) | whether operator-controlled storage of that login is "collecting or storing" |
+| credentials | developers "may not collect, store, or intermediate Claude.ai credentials or session tokens" (V) | how this relates to the carve-out for a PVC the operator controls |
+| hosting | binary must stay unmodified; each end user authenticates with their own credentials; preinstalling/running Claude Code in a product or service "requires agreeing to our Commercial Terms of Service" unless otherwise agreed | whether an internal platform for one's own users is "a product or service" |
+| usage limits | assume "ordinary, individual usage"; limits shared between Claude and Claude Code | whether script-driven `claude -p` is "ordinary" |
+| Consumer Terms (summarizer output, unverified) | automated or non-human access (bot, script) prohibited except via API key or where explicitly permitted; account credentials not to be shared | how `-p` via `kubectl exec` is classed |
+
+### Login mechanics
+| what | fact | source |
+|---|---|---|
+| flow | interactive TUI; copy printed URL, approve in browser, paste code at `Paste code here if prompted`; flags `--claudeai --console --email --sso` | authentication; local `claude auth login --help` |
+| no TTY | no flag prints the URL; issue #81545 (closed, not planned); device-code request #22992 open; behavior without `-t` not documented | GitHub issues |
+| refresh | refreshed automatically; no token lifetimes or idle behavior documented; failure message in `-p`: `Failed to authenticate: OAuth session expired and could not be refreshed`, code `authentication_failed`; "Login expired" error page exists (V), including "another Claude Code process is refreshing it" (V, heading) | errors |
+| concurrency | open issues report single-use refresh tokens invalidated by overlapping runs: #98693, #88583, #102265, #95822; #12447 expiry in unattended Docker | GitHub issues |
+| storage | `.credentials.json` mode 0600 under `CLAUDE_CONFIG_DIR`; that variable also relocates `.claude.json`, settings, transcripts | authentication, claude-directory |
+
+### Managed settings (not re-verified; the settings page text I searched did not contain the key names)
+| what | fact |
+|---|---|
+| path | `/etc/claude-code/managed-settings.json`; managed overrides all other sources |
+| `forceLoginMethod` | `claudeai`, `console`, `gateway` |
+| `forceLoginOrgUUID` | one UUID or a list; only a managed source enforces; mismatch exits at startup; blocks `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper` |
+| mounts | ConfigMap/read-only mounts not mentioned; unparsable file: Claude Code refuses to start |
+
+### Sessions and permissions
+| what | fact | source |
+|---|---|---|
+| `--session-id` | "must be a valid UUID" (V); behavior when the ID already exists: not documented | cli-reference |
+| storage | `<CLAUDE_CONFIG_DIR>/projects/<cwd with non-alphanumerics replaced by ->/<session-id>.jsonl`; `--resume <id>` works from any directory if exactly one project holds it | sessions |
+| `--output-format json` | documented fields: `result`, `session_id`, `total_cost_usd`, usage; exit 0 on success, non-zero on failure | headless |
+| retention | `cleanupPeriodDays` default 30 | claude-directory |
+| `--allowedTools` | lists tools that run without prompting; `--tools` restricts which tools exist (wording not re-verified); in `-p` Manual mode a call needing approval is denied | headless, cli-reference |
+| `Read` deny | path forms `//abs`, `~/`, `/`, `./`; best-effort for Grep/Glob; not applied to subprocesses or `grep -r` without a named file | permissions |
+
+### Cluster side (sub-agent reports, not re-verified)
+| what | fact |
+|---|---|
+| Autopilot | `runAsUser` allowed; `RuntimeDefault` seccomp applied; ephemeral storage per Pod 10 MiB to 10 GiB; GKE default StorageClass is balanced PD (Standard-mode page); RWO only |
+| Restricted Pod Security profile | `runAsNonRoot`, no privilege escalation, `capabilities.drop` includes ALL, seccomp `RuntimeDefault`/`Localhost` |
+| NetworkPolicy | default-deny egress also blocks DNS; needs a policy-enforcing network plugin |
+| namespaces | RBAC and NetworkPolicy are namespace-scoped; ResourceQuota per namespace |
+| `kubectl exec` | `-i` passes stdin, `-t` sets TTY; exit-code propagation, timeouts and the RBAC verb not confirmed |
+
+### Questions for the plan (added)
+- Is operator-hosted storage of a person's login within the carve-out, and is a Commercial Terms agreement needed? (not answerable from the text; Anthropic)
+- How does a person log in to a Pod without a printed-URL flag: `kubectl exec -it` as in the PoC, or something else? (#81545)
+- What happens to a login that sits idle for days, and to overlapping `claude -p` runs? (undocumented; open issues)
+- Unit of isolation per person: Pod, StatefulSet, or namespace?

@@ -10,10 +10,20 @@ Status: files written, **nothing built, applied or run**. `kubectl` is not insta
 | `k8s/` | Namespace `claude-poc`, ServiceAccount (no token, no GCP identity), managed-settings ConfigMap, StatefulSet `claude` (replicas 1, PVC at `/home/claude/.claude`), optional `networkpolicy.yaml` (not in the kustomization) |
 | `claude-pod` | `claude-pod <conversation-key> "<prompt>"` |
 
-## Before applying
+## Build and apply
 
-1. Fill in the image path in `k8s/statefulset.yaml` (`REPLACE_REGION`, `REPLACE_PROJECT`, `REPLACE_REPO`) after building and pushing the image.
-2. Replace `forceLoginOrgUUID` in `k8s/managed-settings.yaml` with your organization UUID.
+Nothing project-specific is stored in the files. Set these in your shell:
+
+```bash
+export PROJECT_ID=...        # GCP project
+export REGION=...            # Artifact Registry region
+export REPO=...              # Artifact Registry repository
+export CLAUDE_ORG_UUID=...   # your organization UUID (forceLoginOrgUUID)
+export CLAUDE_POC_IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/claude-code-poc:latest"
+
+docker build -t "$CLAUDE_POC_IMAGE" . && docker push "$CLAUDE_POC_IMAGE"
+kubectl kustomize k8s | envsubst '${CLAUDE_POC_IMAGE} ${CLAUDE_ORG_UUID}' | kubectl apply -f -
+```
 
 ## Login (human, in the Pod)
 

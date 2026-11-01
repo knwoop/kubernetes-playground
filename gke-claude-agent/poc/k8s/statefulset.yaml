@@ -22,7 +22,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: claude
-          image: REPLACE_REGION-docker.pkg.dev/REPLACE_PROJECT/REPLACE_REPO/claude-code-poc:latest
+          image: ${CLAUDE_POC_IMAGE}
           workingDir: /workspace/repo
           env:
             - {name: CLAUDE_CONFIG_DIR, value: /home/claude/.claude}
