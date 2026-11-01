@@ -131,18 +131,18 @@ sequenceDiagram
 
 ## External specs
 
-Quotes are from the evidence; the Japanese is the evidence's translation.
+Quotes are from the evidence.
 
-| topic (→ Q4) | original | 日本語 | URL |
-|---|---|---|---|
-| Collect or store credentials | "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." | 開発者は Claude.ai の認証情報やセッショントークンを収集、保存、仲介してはならない。サインインは Anthropic 自身のフローで完結しなければならない。 | code.claude.com/docs/en/legal-and-compliance |
-| End-user carve-out | "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code as described under Can customers offer Claude Code in their products? above." | エンドユーザーが自分の Claude サブスクリプションで改変されていない Claude Code バイナリにサインインすることも妨げない。プラットフォームが Claude Code をホストする場合を含む。 | same |
-| Hosting condition | "preinstalling or running Claude Code in your products or services (e.g. in hosted sandboxes or other agent infrastructure) requires agreeing to our Commercial Terms of Service and complying with the conditions below" | 自社の製品やサービス(例: ホスト型サンドボックス)に Claude Code をプリインストールまたは実行するには、Commercial Terms of Service への同意と以下の条件の遵守が必要。 | same |
-| Conditions | "The Claude Code binary must not be modified." / "Customers may not pay for, resell, or intermediate Claude usage on their end users' behalf. Each end user must authenticate with their own ... Claude subscription plan credentials" | バイナリは改変不可。顧客はエンドユーザーに代わって利用料の支払い、再販、仲介をしてはならない。各エンドユーザーは自分のサブスクリプション認証情報で認証する。 | same |
-| No sharing | "You may not share your Account login information, Anthropic API key, or Account credentials with anyone else. You also may not make your Account available to anyone else." | ログイン情報や認証情報を他人と共有してはならず、アカウントを他人に利用可能にしてもならない。 | anthropic.com/legal/consumer-terms, section 2 |
-| Automation | "Except when you are accessing our Services via an Anthropic API Key or where we otherwise explicitly permit it, to access the Services through automated or non-human means, whether through a bot, script, or otherwise." | API キー経由、または明示的に許可された場合を除き、ボット、スクリプト等の自動または人以外の手段で Services にアクセスしてはならない。 | consumer-terms, section 3 |
-| Usage limits | "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK." | Pro、Max、Ultra の告知された利用上限は、通常の個人利用を前提としている。 | legal-and-compliance, Acceptable use |
-| Routing | "Resell, proxy, or otherwise provide access to Claude through unauthorized means, including services that route requests through consumer subscriptions" | 認可されていない手段での再販、プロキシ、アクセス提供。消費者向けサブスクリプション経由のルーティングを含む。 | anthropic.com/legal/aup |
+| topic (→ Q4) | original | URL |
+|---|---|---|
+| Collect or store credentials | "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." | code.claude.com/docs/en/legal-and-compliance |
+| End-user carve-out | "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code as described under Can customers offer Claude Code in their products? above." | same |
+| Hosting condition | "preinstalling or running Claude Code in your products or services (e.g. in hosted sandboxes or other agent infrastructure) requires agreeing to our Commercial Terms of Service and complying with the conditions below" | same |
+| Conditions | "The Claude Code binary must not be modified." / "Customers may not pay for, resell, or intermediate Claude usage on their end users' behalf. Each end user must authenticate with their own ... Claude subscription plan credentials" | same |
+| No sharing | "You may not share your Account login information, Anthropic API key, or Account credentials with anyone else. You also may not make your Account available to anyone else." | anthropic.com/legal/consumer-terms, section 2 |
+| Automation | "Except when you are accessing our Services via an Anthropic API Key or where we otherwise explicitly permit it, to access the Services through automated or non-human means, whether through a bot, script, or otherwise." | consumer-terms, section 3 |
+| Usage limits | "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of Claude Code and the Agent SDK." | legal-and-compliance, Acceptable use |
+| Routing | "Resell, proxy, or otherwise provide access to Claude through unauthorized means, including services that route requests through consumer subscriptions" | anthropic.com/legal/aup |
 
 Versions: Consumer Terms effective Oct 8, 2025. Commercial Terms effective Jun 17, 2025. Usage Policy page shows effective Nov 12, 2026 (later than the fetch date; earlier versions not compared). Legal-and-compliance page shows no date.
 
