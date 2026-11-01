@@ -14,6 +14,7 @@ K8S="$HERE/k8s"
 kubectl apply -f "$K8S/namespace.yaml"
 kubectl apply -f "$K8S/serviceaccount.yaml"
 sed "s/REPLACE_WITH_ORG_UUID/$CLAUDE_ORG_UUID/" "$K8S/configmap-managed-settings.yaml" | kubectl apply -f -
+# shellcheck disable=SC2016 # envsubst needs the literal ${IMAGE}
 IMAGE="$REGISTRY_IMAGE" envsubst '${IMAGE}' < "$K8S/statefulset.yaml" | kubectl apply -f -
 
 kubectl -n claude-agent rollout status statefulset/claude --timeout=600s
