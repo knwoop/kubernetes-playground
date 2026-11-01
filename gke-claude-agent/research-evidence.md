@@ -662,12 +662,12 @@ Searched, not found:
 | Autopilot supports exec. | GKE/concepts/autopilot-security : "You can still connect remotely to your running containers using the Kubernetes exec functionality to execute commands in your containers for debugging, including connecting to an interactive shell, for example with kubectl exec -it deploy/YOUR_DEPLOYMENT -- sh." | |
 | Autopilot supports user impersonation for user-defined users/groups. | same page: "Autopilot supports user impersonation for all user-defined users and groups." | |
 
-Who can read another person's PVC contents (docs-derived chain): (1) anyone with exec/attach on that Pod; (2) anyone able to create a Pod in that namespace that mounts the PVC (rbac-good-practices quote above); (3) nodes/proxy holders; (4) cluster-admin; (5) project-level GCP roles able to read the underlying Persistent Disk: not covered by pages read.
+Who can read another person's PVC contents (docs-derived chain): (1) anyone with exec/attach on that Pod; (2) anyone able to create a Pod in that namespace that mounts the PVC (rbac-good-practices quote above); (3) nodes/proxy holders; (4) cluster-admin; (5) project-level Google Cloud roles able to read the underlying Persistent Disk: not covered by pages read.
 
 Searched, not found:
 - The RBAC verb required for `pods/exec` and `pods/attach` (docs state only subresource + `resourceNames` example) | K8S rbac.md (grep `pods/exec`: one hit, the note above)
 - Contents of `roles/container.clusterViewer` w.r.t. exec/secrets; whether it allows `gcloud container clusters get-credentials` | IAM roles page not grepped for this role
-- GCP IAM access to the Persistent Disk behind a PVC (Compute Engine disk roles) | not searched in docs
+- Google Cloud IAM access to the Persistent Disk behind a PVC (Compute Engine disk roles) | not searched in docs
 - Official GKE doc showing a per-Pod exec Role example | GKE access-control, enterprise-multitenancy
 
 ---
