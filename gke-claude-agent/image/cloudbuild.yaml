@@ -4,6 +4,7 @@ steps:
     args:
       - build
       - --build-arg=CLAUDE_CODE_VERSION=${_CLAUDE_CODE_VERSION}
+      - --platform=${_PLATFORM}
       - --tag=${_IMAGE}
       - .
 images:

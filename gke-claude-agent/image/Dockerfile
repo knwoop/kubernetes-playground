@@ -17,9 +17,13 @@ ENV HOME=/home/claude \
 # DISABLE_UPDATES must NOT be set here: the installer treats it as "do nothing".
 # The installer also writes state under ~/.claude; remove it so the image ships no
 # config, credentials or .claude.json (the PVC provides CLAUDE_CONFIG_DIR at run time).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /tmp
 RUN curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CODE_VERSION} \
-    && rm -rf /home/claude/.claude /home/claude/.claude.json
+    && test "$(claude --version)" = "${CLAUDE_CODE_VERSION} (Claude Code)" \
+    && test "$(id -u)" = "10001" \
+    && rm -rf /home/claude/.claude /home/claude/.claude.json \
+    && test ! -e /home/claude/.claude
 
 ENV CLAUDE_CONFIG_DIR=/home/claude/.claude \
     CLAUDE_CODE_PROJECT_DIR_NAME=work \
