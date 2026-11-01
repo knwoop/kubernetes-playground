@@ -1,0 +1,20 @@
+# Optional. Apply only after the PoC works without it.
+# Plain NetworkPolicy matches IPs, not hostnames: this allows DNS plus HTTPS
+# to any address. Restricting to api.anthropic.com / claude.ai /
+# platform.claude.com by name needs a FQDN-aware policy (not verified here).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: claude-egress
+  namespace: claude-poc
+spec:
+  podSelector:
+    matchLabels: {app: claude}
+  policyTypes: [Egress, Ingress]
+  ingress: []
+  egress:
+    - ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}

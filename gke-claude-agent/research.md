@@ -1,6 +1,6 @@
 # GKE for a Claude Code agent platform: research (2026-11-01)
 
-Question: what has to be known before planning "spin up GKE in `kauche-personal-k-takahashi`, run the owner's own Claude Code as an agent on it (authenticated with a Claude subscription token), with an AI agent platform as the long-term goal". Why: the issue's stated goal. Out of scope: choosing an approach, writing manifests, enabling any API (research was read-only).
+Question: what has to be known before planning "spin up GKE in a personal GCP project, run the owner's own Claude Code as an agent on it (authenticated with a Claude subscription token), with an AI agent platform as the long-term goal". Why: the issue's stated goal. Out of scope: choosing an approach, writing manifests, enabling any API (research was read-only).
 
 - Issue: kubernetes-playground-mg1 / Commit: 29ac114 on kubernetes-playground-mg1-gke-claude-code-agent-plan
 - All external pages fetched 2026-11-01. "Verified" = re-checked by me; others are sub-agent reports.

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Usage: claude-pod <conversation-key> "<prompt>"
+set -euo pipefail
+
+NS="${CLAUDE_POD_NAMESPACE:-claude-poc}"
+POD="${CLAUDE_POD_NAME:-claude-0}"
+CONFIG_DIR="/home/claude/.claude"
+WORKDIR="/workspace/repo"
+# Fixed namespace UUID: changing it changes every derived session ID.
+NAMESPACE_UUID="6f1c1f0e-5b7a-4c1e-9a3e-2f4d8b9a7c10"
+ALLOWED_TOOLS="Read,Grep,Glob"
+
+[ $# -eq 2 ] || { echo 'usage: claude-pod <conversation-key> "<prompt>"' >&2; exit 2; }
+key="$1"; prompt="$2"
+
+sid=$(python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.UUID(sys.argv[1]), sys.argv[2]))' "$NAMESPACE_UUID" "$key")
+
+# Does the session file exist in the Pod? (checks the name only, never reads contents)
+if kubectl exec -n "$NS" "$POD" -- \
+     find "$CONFIG_DIR/projects" -name "$sid.jsonl" -print -quit 2>/dev/null | grep -q .; then
+  flag=(--resume "$sid")
+else
+  flag=(--session-id "$sid")
+fi
+
+kubectl exec -n "$NS" "$POD" -- \
+  bash -c 'cd "$1" && shift && exec "$@"' _ "$WORKDIR" \
+  claude -p "$prompt" "${flag[@]}" --output-format json --allowedTools "$ALLOWED_TOOLS" \
+| python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(d.get("result",""))
+print("session_id:", d.get("session_id",""))
+'
